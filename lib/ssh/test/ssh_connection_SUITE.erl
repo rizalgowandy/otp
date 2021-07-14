@@ -56,8 +56,10 @@
          gracefull_invalid_long_start_no_nl/1,
          gracefull_invalid_start/1,
          gracefull_invalid_version/1,
+         kex_error/1,
          interrupted_send/1,
          max_channels_option/1,
+         no_sensitive_leak/1,
          ptty_alloc/1,
          ptty_alloc_default/1,
          ptty_alloc_pixel/1,
@@ -91,7 +93,6 @@
          ssh_exec_echo/2 % called as an MFA
         ]).
 
--define(SSH_DEFAULT_PORT, 22).
 -define(EXEC_TIMEOUT, 10000).
 
 %%--------------------------------------------------------------------
@@ -136,7 +137,9 @@ all() ->
      gracefull_invalid_start,
      gracefull_invalid_long_start,
      gracefull_invalid_long_start_no_nl,
+     kex_error,
      stop_listener,
+     no_sensitive_leak,
      start_subsystem_on_closed_channel,
      max_channels_option
     ].
@@ -174,7 +177,7 @@ end_per_suite(_Config) ->
 
 %%--------------------------------------------------------------------
 init_per_group(openssh, Config) ->
-    case ssh_test_lib:gen_tcp_connect("localhost", 22, []) of
+    case ssh_test_lib:gen_tcp_connect(?SSH_DEFAULT_PORT, []) of
 	{error,econnrefused} ->
 	    {skip,"No openssh deamon (econnrefused)"};
 	{ok, Socket} ->
@@ -202,15 +205,16 @@ end_per_testcase(_TestCase, _Config) ->
 %% Test Cases --------------------------------------------------------
 %%--------------------------------------------------------------------
 simple_exec(Config) when is_list(Config) ->
-    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
-							     {user_interaction, false}]),
+    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, []),
     do_simple_exec(ConnectionRef).
 
 %%--------------------------------------------------------------------
 simple_exec_sock(_Config) ->
-    {ok, Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, [{active,false}]),
-    {ok, ConnectionRef} = ssh:connect(Sock, [{silently_accept_hosts, true},
-					     {user_interaction, false}]),
+    {ok, Sock} = ssh_test_lib:gen_tcp_connect(?SSH_DEFAULT_PORT, [{active,false}]),
+    {ok, ConnectionRef} = ssh:connect(Sock, [{save_accepted_host, false},
+                                             {silently_accept_hosts, true},
+                                             {user_interaction, true}
+                                            ]),
     do_simple_exec(ConnectionRef).
 
 %%--------------------------------------------------------------------
@@ -219,9 +223,10 @@ simple_exec_two_socks(_Config) ->
     F = fun() ->
                 spawn_link(
                   fun() ->
-                          {ok, Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, [{active,false}]),
-                          {ok, ConnectionRef} = ssh:connect(Sock, [{silently_accept_hosts, true},
-                                                                   {user_interaction, false}]),
+                          {ok, Sock} = ssh_test_lib:gen_tcp_connect(?SSH_DEFAULT_PORT, [{active,false}]),
+                          {ok, ConnectionRef} = ssh:connect(Sock, [{save_accepted_host, false},
+                                                                   {silently_accept_hosts, true},
+                                                                   {user_interaction, true}]),
                           Parent ! {self(),do_simple_exec(ConnectionRef)}
                   end)
         end,
@@ -237,7 +242,9 @@ simple_exec_two_socks(_Config) ->
 %%--------------------------------------------------------------------
 connect_sock_not_tcp(_Config) ->
     {ok,Sock} = gen_udp:open(0, []), 
-    {error, not_tcp_socket} = ssh:connect(Sock, []),
+    {error, not_tcp_socket} = ssh:connect(Sock, [{save_accepted_host, false},
+                                                 {silently_accept_hosts, true},
+                                                 {user_interaction, true}]),
     gen_udp:close(Sock).
 
 %%--------------------------------------------------------------------
@@ -248,20 +255,21 @@ daemon_sock_not_tcp(_Config) ->
 
 %%--------------------------------------------------------------------
 connect_sock_not_passive(_Config) ->
-    {ok,Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, []), 
-    {error, not_passive_mode} = ssh:connect(Sock, []),
+    {ok,Sock} = ssh_test_lib:gen_tcp_connect(?SSH_DEFAULT_PORT, []), 
+    {error, not_passive_mode} = ssh:connect(Sock, [{save_accepted_host, false},
+                                                   {silently_accept_hosts, true},
+                                                   {user_interaction, true}]),
     gen_tcp:close(Sock).
 
 %%--------------------------------------------------------------------
 daemon_sock_not_passive(_Config) ->
-    {ok,Sock} = ssh_test_lib:gen_tcp_connect("localhost", ?SSH_DEFAULT_PORT, []), 
+    {ok,Sock} = ssh_test_lib:gen_tcp_connect(?SSH_DEFAULT_PORT, []), 
     {error, not_passive_mode} = ssh:daemon(Sock),
     gen_tcp:close(Sock).
 
 %%--------------------------------------------------------------------
 small_cat(Config) when is_list(Config) ->
-    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
-							     {user_interaction, false}]),
+    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, []),
     {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
     success = ssh_connection:exec(ConnectionRef, ChannelId0,
 				  "cat", infinity),
@@ -349,8 +357,7 @@ big_cat(Config) when is_list(Config) ->
 
 %%--------------------------------------------------------------------
 send_after_exit(Config) when is_list(Config) ->
-    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
-							     {user_interaction, false}]),
+    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, []),
     {ok, ChannelId0} = ssh_connection:session_channel(ConnectionRef, infinity),
     Data = <<"I like spaghetti squash">>,
 
@@ -414,8 +421,7 @@ encode_decode_pty_opts(_Config) ->
 
 %%--------------------------------------------------------------------
 ptty_alloc_default(Config) when is_list(Config) ->
-    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
-							     {user_interaction, false}]),
+    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, []),
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
     Expect = case proplists:get_value(ptty_supported, Config) of
                  true -> success;
@@ -426,8 +432,7 @@ ptty_alloc_default(Config) when is_list(Config) ->
 
 %%--------------------------------------------------------------------
 ptty_alloc(Config) when is_list(Config) ->
-    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
-							     {user_interaction, false}]),
+    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, []),
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
     Expect = case proplists:get_value(ptty_supported, Config) of
                  true -> success;
@@ -440,8 +445,7 @@ ptty_alloc(Config) when is_list(Config) ->
 
 %%--------------------------------------------------------------------
 ptty_alloc_pixel(Config) when is_list(Config) ->
-    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, [{silently_accept_hosts, true},
-							     {user_interaction, false}]),
+    ConnectionRef = ssh_test_lib:connect(?SSH_DEFAULT_PORT, []),
     {ok, ChannelId} = ssh_connection:session_channel(ConnectionRef, infinity),
     Expect = case proplists:get_value(ptty_supported, Config) of
                  true -> success;
@@ -941,6 +945,7 @@ start_shell_sock_exec_fun(Config) when is_list(Config) ->
 
     {ok, Sock} = ssh_test_lib:gen_tcp_connect(Host, Port, [{active,false}]),
     {ok,ConnectionRef} = ssh:connect(Sock, [{silently_accept_hosts, true},
+                                            {save_accepted_host, false},
 					    {user, "foo"},
 					    {password, "morot"},
 					    {user_interaction, true},
@@ -974,7 +979,7 @@ start_shell_sock_daemon_exec(Config) ->
 
     %% A server tcp-contects to the listening socket and starts an ssh daemon
     spawn_link(fun() ->
-		       {ok,Ss} = ssh_test_lib:gen_tcp_connect("localhost", Port, [{active,false}]),
+		       {ok,Ss} = ssh_test_lib:gen_tcp_connect(Port, [{active,false}]),
 		       {ok, _Pid} = ssh:daemon(Ss, [{system_dir, SysDir},
 						    {user_dir, UserDir},
 						    {password, "morot"},
@@ -984,6 +989,7 @@ start_shell_sock_daemon_exec(Config) ->
     %% The client accepts the tcp connection from the server and ssh-connects to it
     {ok,Sc} = gen_tcp:accept(Sl),
     {ok,ConnectionRef} = ssh:connect(Sc, [{silently_accept_hosts, true},
+                                          {save_accepted_host, false},
 					  {user, "foo"},
 					  {password, "morot"},
 					  {user_interaction, true},
@@ -1025,7 +1031,7 @@ start_shell_sock_daemon_exec_multi(Config) ->
     %% Servers tcp-contects to the listening socket and starts an ssh daemon
     Pids =
         [spawn_link(fun() ->
-                            {ok,Ss} = ssh_test_lib:gen_tcp_connect("localhost", Port, [{active,false}]),
+                            {ok,Ss} = ssh_test_lib:gen_tcp_connect(Port, [{active,false}]),
                             {ok, _Pid} = ssh:daemon(Ss, DaemonOpts)
                     end)
          || _ <- lists:seq(1,NumConcurent)],
@@ -1036,6 +1042,7 @@ start_shell_sock_daemon_exec_multi(Config) ->
         [begin
              {ok,Sc} = gen_tcp:accept(Sl),
              {ok,ConnectionRef} = ssh:connect(Sc, [{silently_accept_hosts, true},
+                                                   {save_accepted_host, false},
                                                    {user, "foo"},
                                                    {password, "morot"},
                                                    {user_interaction, true},
@@ -1165,6 +1172,71 @@ gracefull_invalid_long_start_no_nl(Config) when is_list(Config) ->
 	10000 -> ct:fail("timeout ~p:~p",[?MODULE,?LINE])
     end.
 
+kex_error(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+    [Kex1,Kex2|_] = proplists:get_value(kex, ssh:default_algorithms()),
+    {_Pid, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+                                              {user_dir, UserDir},
+                                              {password, "morot"},
+                                              {preferred_algorithms,[{kex,[Kex1]}]}
+                                             ]),
+    Ref = make_ref(),
+    ok = ssh_log_h:add_fun(kex_error,
+                           fun(#{msg:={report,#{format:=Fmt,args:=As,label:={error_logger,_}}}}, Pid) ->
+                                   true = (erlang:process_info(Pid) =/= undefined), % remove handler if we are dead
+                                   Pid ! {Ref, lists:flatten(io_lib:format(Fmt,As))};
+                              (_,Pid) ->
+                                   true = (erlang:process_info(Pid) =/= undefined), % remove handler if we are dead
+                                   ok % Other msg
+                           end,
+                           self()),
+    try
+        ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+                                          {user, "foo"},
+                                          {password, "morot"},
+                                          {user_interaction, false},
+                                          {user_dir, UserDir},
+                                          {preferred_algorithms,[{kex,[Kex2]}]}
+                                         ])
+    of
+        _ ->
+            ok = logger:remove_handler(kex_error),
+            ct:fail("expected failure", [])
+    catch
+        error:{badmatch,{error,"Key exchange failed"}} ->
+            %% ok
+            receive
+                {Ref, ErrMsgTxt} ->
+                    ok = logger:remove_handler(kex_error),
+                    ct:log("ErrMsgTxt = ~n~s", [ErrMsgTxt]),
+                    Lines = lists:map(fun string:trim/1, string:tokens(ErrMsgTxt, "\n")),
+                    OK = (lists:all(fun(S) -> lists:member(S,Lines) end,
+                                    ["Disconnects with code = 3 [RFC4253 11.1]: Key exchange failed",
+                                     "Details:",
+                                     "No common key exchange algorithm,",
+                                     "we have:",
+                                     "peer have:"]) andalso
+                          string:find(ErrMsgTxt, atom_to_list(Kex1)) =/= nomatch andalso
+                          string:find(ErrMsgTxt, atom_to_list(Kex2)) =/= nomatch),
+                    case OK of
+                        true ->
+                            ok;
+                        false ->
+                            ct:fail("unexpected error text msg", [])
+                    end
+            after 20000 ->
+                    ok = logger:remove_handler(kex_error),
+                    ct:fail("timeout", [])
+            end;
+
+        error:{badmatch,{error,_}} ->
+            ok = logger:remove_handler(kex_error),
+            ct:fail("unexpected error msg", [])
+    end.
+
 stop_listener(Config) when is_list(Config) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
@@ -1187,6 +1259,8 @@ stop_listener(Config) when is_list(Config) ->
     ssh:stop_listener(Host, Port),
 
     {error, _} = ssh:connect(Host, Port, [{silently_accept_hosts, true},
+                                          {save_accepted_host, false},
+                                          {save_accepted_host, false},
 					  {user, "foo"},
 					  {password, "morot"},
 					  {user_interaction, true},
@@ -1211,6 +1285,7 @@ stop_listener(Config) when is_list(Config) ->
 							       {user_interaction, true},
 							       {user_dir, UserDir}]),
 	    {error, _} = ssh:connect(Host, Port, [{silently_accept_hosts, true},
+                                                  {save_accepted_host, false},
                                                   {user, "foo"},
                                                   {password, "morot"},
                                                   {user_interaction, true},
@@ -1225,6 +1300,69 @@ stop_listener(Config) when is_list(Config) ->
 	    ct:fail({unexpected, Error})
     end.
 
+no_sensitive_leak(Config) ->
+    PrivDir = proplists:get_value(priv_dir, Config),
+    UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth
+    file:make_dir(UserDir),
+    SysDir = proplists:get_value(data_dir, Config),
+
+    %% Save old, and set new log level:
+    #{level := Level} = logger:get_primary_config(),
+    logger:set_primary_config(level, info),
+    %% Define a collect fun:
+    Ref = make_ref(),
+    Collect = 
+        fun G(N,Nf,Nt) ->
+                receive
+                    {Ref, false, _} ->
+                        G(N+1, Nf+1, Nt);
+                    {Ref, true, R} ->
+                        ct:log("Report leaked:~n~p", [R]),
+                        G(N+1, Nf, Nt+1)
+                after 100 ->
+                        {N, Nf, Nt}
+                end
+        end,
+ 
+    %% Install the test handler:
+    Hname = no_sensitive_leak,
+    ok = ssh_log_h:add_fun(Hname,
+                           fun(#{msg := {report, R=#{report := Rep}}}, Pid) ->
+                                   true = (erlang:process_info(Pid, status) =/= undefined), % remove handler if we are dead
+                                   Pid ! {Ref,ssh_log_h:sensitive_in_opt(Rep),Rep};
+                              (_,Pid) ->
+                                   true = (erlang:process_info(Pid, status) =/= undefined), % remove handler if we are dead
+                                   ok
+                           end,
+                           self()),
+
+    {Pid0, Host, Port} = ssh_test_lib:daemon([{system_dir, SysDir},
+					      {user_dir, UserDir},
+					      {password, "morot"},
+					      {exec, fun ssh_exec_echo/1}]),
+
+    ConnectionRef0 = ssh_test_lib:connect(Host, Port, [{silently_accept_hosts, true},
+						       {user, "foo"},
+						       {password, "morot"},
+						       {user_interaction, true},
+						       {user_dir, UserDir}]),
+    %% Kill acceptor to make it restart:
+    [true|_] =
+        [exit(Pacc,kill) || {{ssh_system_sup,_},P1,supervisor,_} <- supervisor:which_children(sshd_sup),
+                            {{ssh_acceptor_sup,_},P2,supervisor,_} <- supervisor:which_children(P1),
+                            {{ssh_acceptor_sup,_},Pacc,worker,_} <- supervisor:which_children(P2)],
+    
+    %% Remove the test handler and reset the logger level:
+    timer:sleep(500),
+    logger:remove_handler(Hname),
+    logger:set_primary_config(Level),
+
+    case Collect(0, 0, 0) of
+        {0, 0,   0} -> ct:fail("Logging failed, line = ~p", [?LINE]);
+        {_, _,   0} -> ok;
+        {_, _, Nt0} -> ct:fail("Leak in ~p cases!", [Nt0])
+    end.
+    
 start_subsystem_on_closed_channel(Config) ->
     PrivDir = proplists:get_value(priv_dir, Config),
     UserDir = filename:join(PrivDir, nopubkey), % to make sure we don't use public-key-auth

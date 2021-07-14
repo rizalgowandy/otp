@@ -255,7 +255,7 @@ which_children(Supervisor) ->
       Count :: {specs, ChildSpecCount :: non_neg_integer()}
              | {active, ActiveProcessCount :: non_neg_integer()}
              | {supervisors, ChildSupervisorCount :: non_neg_integer()}
-             |{workers, ChildWorkerCount :: non_neg_integer()}.
+             | {workers, ChildWorkerCount :: non_neg_integer()}.
 count_children(Supervisor) ->
     call(Supervisor, count_children).
 
@@ -792,7 +792,7 @@ restart(Child, State) ->
 	    case restart(NState#state.strategy, Child, NState) of
 		{{try_again, TryAgainId}, NState2} ->
 		    %% Leaving control back to gen_server before
-		    %% trying again. This way other incoming requsts
+		    %% trying again. This way other incoming requests
 		    %% for the supervisor can be handled - e.g. a
 		    %% shutdown request for the supervisor or the
 		    %% child.
@@ -1181,7 +1181,7 @@ find_dynamic_child(Pid, State) ->
             error
     end.
 
-%% Given the pid, find the child record for a non-dyanamic child.
+%% Given the pid, find the child record for a non-dynamic child.
 -spec find_child_by_pid(IdOrPid, state()) -> {ok,child_rec()} | error when
       IdOrPid :: pid() | {restarting,pid()}.
 find_child_by_pid(Pid,#state{children={_Ids,Db}}) ->
@@ -1444,10 +1444,10 @@ validRestartType(temporary)   -> true;
 validRestartType(transient)   -> true;
 validRestartType(RestartType) -> throw({invalid_restart_type, RestartType}).
 
-validSignificant(true, permanent, _AutoShutdown) ->
-    throw({invalid_significant, true});
 validSignificant(true, _RestartType, never) ->
-    throw({invalid_significant, true});
+    throw({bad_combination, [{auto_shutdown, never}, {significant, true}]});
+validSignificant(true, permanent, _AutoShutdown) ->
+    throw({bad_combination, [{restart, permanent}, {significant, true}]});
 validSignificant(Significant, _RestartType, _AutoShutdown)
   when is_boolean(Significant) ->
     true;
@@ -1455,7 +1455,7 @@ validSignificant(Significant, _RestartType, _AutoShutdown) ->
     throw({invalid_significant, Significant}).
 
 validShutdown(Shutdown)
-  when is_integer(Shutdown), Shutdown > 0 -> true;
+  when is_integer(Shutdown), Shutdown >= 0 -> true;
 validShutdown(infinity)             -> true;
 validShutdown(brutal_kill)          -> true;
 validShutdown(Shutdown)             -> throw({invalid_shutdown, Shutdown}).
@@ -1500,7 +1500,7 @@ add_restart(State) ->
     P = State#state.period,
     R = State#state.restarts,
     Now = erlang:monotonic_time(1),
-    R1 = add_restart([Now|R], Now, P),
+    R1 = add_restart(R, Now, P),
     State1 = State#state{restarts = R1},
     case length(R1) of
 	CurI when CurI  =< I ->
@@ -1509,18 +1509,13 @@ add_restart(State) ->
 	    {terminate, State1}
     end.
 
-add_restart([R|Restarts], Now, Period) ->
-    case inPeriod(R, Now, Period) of
-	true ->
-	    [R|add_restart(Restarts, Now, Period)];
-	_ ->
-	    []
-    end;
-add_restart([], _, _) ->
-    [].
-
-inPeriod(Then, Now, Period) ->
-    Now =< Then + Period.
+add_restart(Restarts0, Now, Period) ->
+    Treshold = Now - Period,
+    Restarts1 = lists:takewhile(
+                  fun (R) -> R >= Treshold end,
+                  Restarts0
+                 ),
+    [Now | Restarts1].
 
 %%% ------------------------------------------------------
 %%% Error and progress reporting.

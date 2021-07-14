@@ -57,7 +57,10 @@ struct BeamCodeReader__ {
     BeamFile *file;
 
     BeamOp *pending;
-    Uint first;
+
+    BeamOpArg current_func_label;
+    BeamOpArg current_entry_label;
+    int first;
 };
 
 typedef struct {
@@ -320,24 +323,23 @@ static int parse_import_chunk(BeamFile *beam, IFF_Chunk *chunk) {
     return 1;
 }
 
-static int parse_export_chunk(BeamFile *beam, IFF_Chunk *chunk) {
-    BeamFile_ExportTable *exports;
+static int parse_export_table(BeamFile_ExportTable *dest,
+			      BeamFile *beam, IFF_Chunk *chunk) {
     BeamFile_AtomTable *atoms;
     BeamReader reader;
     Sint32 count;
     int i;
 
-    exports = &beam->exports;
-    ASSERT(exports->entries == NULL);
+    ASSERT(dest->entries == NULL);
 
     beamreader_init(chunk->data, chunk->size, &reader);
 
     LoadAssert(beamreader_read_i32(&reader, &count));
-    LoadAssert(CHECK_ITEM_COUNT(count, 0, sizeof(exports->entries[0])));
+    LoadAssert(CHECK_ITEM_COUNT(count, 0, sizeof(dest->entries[0])));
 
-    exports->entries = erts_alloc(ERTS_ALC_T_PREPARED_CODE,
-                                  count * sizeof(exports->entries[0]));
-    exports->count = count;
+    dest->entries = erts_alloc(ERTS_ALC_T_PREPARED_CODE,
+                                  count * sizeof(dest->entries[0]));
+    dest->count = count;
 
     atoms = &beam->atoms;
 
@@ -352,13 +354,23 @@ static int parse_export_chunk(BeamFile *beam, IFF_Chunk *chunk) {
         LoadAssert(arity >= 0 && arity <= MAX_ARG);
         LoadAssert(label >= 0);
 
-        exports->entries[i].function = atoms->entries[atom_index];
-        exports->entries[i].arity = arity;
-        exports->entries[i].label = label;
+        dest->entries[i].function = atoms->entries[atom_index];
+        dest->entries[i].arity = arity;
+        dest->entries[i].label = label;
     }
 
     return 1;
 }
+
+static int parse_export_chunk(BeamFile *beam, IFF_Chunk *chunk) {
+    return parse_export_table(&beam->exports, beam, chunk);
+}
+
+#ifdef BEAMASM
+static int parse_locals_chunk(BeamFile *beam, IFF_Chunk *chunk) {
+    return parse_export_table(&beam->locals, beam, chunk);
+}
+#endif
 
 static int parse_lambda_chunk(BeamFile *beam, IFF_Chunk *chunk) {
     BeamFile_LambdaTable *lambdas;
@@ -737,6 +749,7 @@ beamfile_read(const byte *data, size_t size, BeamFile *beam) {
         MakeIffId('C', 'I', 'n', 'f'), /* 8 */
         MakeIffId('L', 'i', 'n', 'e'), /* 9 */
         MakeIffId('A', 't', 'U', '8'), /* 10 */
+        MakeIffId('L', 'o', 'c', 'T'), /* 11 */
     };
 
     static const int ATOM_CHUNK = 0;
@@ -750,6 +763,9 @@ beamfile_read(const byte *data, size_t size, BeamFile *beam) {
     static const int COMPILE_CHUNK = 8;
     static const int LINE_CHUNK = 9;
     static const int UTF8_ATOM_CHUNK = 10;
+#ifdef BEAMASM
+    static const int LOC_CHUNK = 11;
+#endif
 
     static const int NUM_CHUNKS = sizeof(chunk_iffs) / sizeof(chunk_iffs[0]);
 
@@ -811,6 +827,15 @@ beamfile_read(const byte *data, size_t size, BeamFile *beam) {
         error = BEAMFILE_READ_CORRUPT_EXPORT_TABLE;
         goto error;
     }
+
+#ifdef BEAMASM
+    if (erts_jit_asm_dump && chunks[LOC_CHUNK].size > 0) {
+        if (!parse_locals_chunk(beam, &chunks[LOC_CHUNK])) {
+            error = BEAMFILE_READ_CORRUPT_LOCALS_TABLE;
+            goto error;
+        }
+    }
+#endif
 
     if (chunks[LAMBDA_CHUNK].size > 0) {
         if (!parse_lambda_chunk(beam, &chunks[LAMBDA_CHUNK])) {
@@ -939,6 +964,13 @@ void beamfile_free(BeamFile *beam) {
         erts_free(ERTS_ALC_T_PREPARED_CODE, beam->exports.entries);
         beam->exports.entries = NULL;
     }
+
+#ifdef BEAMASM
+    if (beam->locals.entries) {
+        erts_free(ERTS_ALC_T_PREPARED_CODE, beam->locals.entries);
+        beam->locals.entries = NULL;
+    }
+#endif
 
     if (beam->lambdas.entries) {
         erts_free(ERTS_ALC_T_PREPARED_CODE, beam->lambdas.entries);
@@ -1465,82 +1497,101 @@ static int beamcodereader_read_next(BeamCodeReader *code_reader, BeamOp **out) {
     return 1;
 }
 
+static void synthesize_func_end(BeamCodeReader *code_reader) {
+    BeamOp *func_end;
+
+    func_end = beamopallocator_new_op(code_reader->allocator);
+    func_end->op = genop_int_func_end_2;
+    func_end->arity = 2;
+
+    ASSERT(code_reader->current_func_label.type == TAG_u);
+    func_end->a[0].val = code_reader->current_func_label.val;
+    func_end->a[0].type = TAG_f;
+
+    ASSERT(code_reader->current_entry_label.type == TAG_u);
+    func_end->a[1].val = code_reader->current_entry_label.val;
+    func_end->a[1].type = TAG_f;
+
+    func_end->next = code_reader->pending;
+    code_reader->pending = func_end;
+}
 
 int beamcodereader_next(BeamCodeReader *code_reader, BeamOp **out) {
     BeamOp *op;
 
     if (code_reader->pending) {
-        *out = code_reader->pending;
-        code_reader->pending = code_reader->pending->next;
+        op = code_reader->pending;
+        code_reader->pending = op->next;
+
+        *out = op;
         return 1;
     }
 
     LoadAssert(beamcodereader_read_next(code_reader, &op));
 
-    if (op->op != genop_label_1) {
-        *out = op;
-        return 1;
-    } else {
-        /*
-         * To simplify the rest of the loading process, attempt
-         * to synthesize int_func_start/5 and int_func_end/0
-         * instructions.
+    switch (op->op) {
+    case genop_label_1:
+        /* To simplify the rest of the loading process, attempt to synthesize
+         * int_func_start/5 and int_func_end/2 instructions.
          *
          * We look for the following instruction sequence to
          * find function boundaries: label Lbl | line Loc | func_info M F A.
          * (Where the line instruction is optional.)
          *
-         * So far we have seen a label/0 instruction. Put this
-         * instruction into the pending queue and decode the next
-         * instruction.
-         */
+         * So far we have seen a label/0 instruction. Put this instruction into
+         * the pending queue and decode the next instruction. */
         code_reader->pending = op;
         LoadAssert(beamcodereader_read_next(code_reader, &op->next));
         op = op->next;
 
-        /*
-         * If the current instruction is a line instruction, append it to
-         * the pending queue and decode the following instruction.
-         */
+        /* If the current instruction is a line instruction, append it to
+         * the pending queue and decode the following instruction. */
         if (op->op == genop_line_1) {
             LoadAssert(beamcodereader_read_next(code_reader, &op->next));
             op = op->next;
         }
 
-        /*
-         * If the current instruction is a func_info instruction, we
-         * have found a function boundary.
-         */
-        if (op->op == genop_func_info_3) {
+        /* The code must not end abruptly after a label. */
+        LoadAssert(op->op != genop_int_code_end_0);
+
+        /* If the current instruction is a func_info instruction, we
+         * have found a function boundary. */
+        if (ERTS_LIKELY(op->op != genop_func_info_3)) {
+            op->next = NULL;
+        } else {
+            BeamOpArg func_label, entry_label;
             BeamOp *func_start;
+            BeamOp *entry_op;
             BeamOp *next;
 
-            /*
-             * Prepare to walk through the queue of pending instructions.
-             */
+            /* The func_info/3 instruction must be followed by its entry
+             * label. */
+            LoadAssert(beamcodereader_read_next(code_reader, &entry_op));
+            LoadAssert(entry_op->op == genop_label_1);
+            entry_label = entry_op->a[0];
+            LoadAssert(entry_label.type == TAG_u);
+            entry_op->next = NULL;
+
+            /* Prepare to walk through the queue of pending instructions. */
             op = code_reader->pending;
+
+            /* Pick up the label from the first label/1 instruction. */
             ASSERT(op->op == genop_label_1);
+            func_label = op->a[0];
+            LoadAssert(func_label.type == TAG_u);
 
-            /*
-             * Allocate the int_func_start/0 function.
-             */
-            func_start = beamopallocator_new_op(code_reader->allocator);
-            func_start->op = genop_int_func_start_5;
-            func_start->arity = 5;
-
-            /*
-             * Pick up the label from the label/1 instruction.
-             */
-            func_start->a[0] = op->a[0];
             next = op->next;
             beamopallocator_free_op(code_reader->allocator, op);
             op = next;
 
-            /*
-             * If the current instruction is a line/1 instruction,
-             * pick up the location from that instruction.
-             * Otherwise use NIL.
-             */
+            /* Allocate the int_func_start/0 function. */
+            func_start = beamopallocator_new_op(code_reader->allocator);
+            func_start->op = genop_int_func_start_5;
+            func_start->arity = 5;
+            func_start->a[0] = func_label;
+
+            /* If the current instruction is a line/1 instruction, pick up the
+             * location from that instruction. Otherwise use NIL. */
             func_start->a[1].type = TAG_n;
             if (op->op == genop_line_1) {
                 func_start->a[1] = op->a[0];
@@ -1549,45 +1600,46 @@ int beamcodereader_next(BeamCodeReader *code_reader, BeamOp **out) {
                 op = next;
             }
 
-            /*
-             * Pick up the MFA from the func_info/3 instruction.
-             */
+            /* Pick up the MFA from the func_info/3 instruction. */
             ASSERT(op->op == genop_func_info_3);
             func_start->a[2] = op->a[0];
             func_start->a[3] = op->a[1];
             func_start->a[4] = op->a[2];
             beamopallocator_free_op(code_reader->allocator, op);
 
-            /*
-             * Put the int_func_start/5 instruction into the pending
-             * queue.
-             */
+            /* Put the int_func_start/5 instruction into the pending queue,
+             * and link the entry label after it. */
             code_reader->pending = func_start;
-            op = func_start;
+            func_start->next = entry_op;
 
-            /*
-             * Unless this is the first function in the module,
-             * synthesize an int_func_end/0 instruction and prepend
-             * it to the pending queue.
-             */
-            if (code_reader->first) {
-                code_reader->first = 0;
-            } else {
-                BeamOp *func_end;
-                func_end = beamopallocator_new_op(code_reader->allocator);
-                func_end->op = genop_int_func_end_0;
-                func_end->arity = 0;
-                func_end->next = code_reader->pending;
-                code_reader->pending = func_end;
+            /* Unless this is the first function in the module, synthesize an
+             * int_func_end/2 instruction and prepend it to the pending
+             * queue. */
+            if (!code_reader->first) {
+                synthesize_func_end(code_reader);
             }
+
+            code_reader->current_func_label = func_label;
+            code_reader->current_entry_label = entry_label;
+            code_reader->first = 0;
         }
 
-        /*
-         * At this point, there is at least one instruction in the pending
-         * queue. The op variable points to the last instruction in the queue.
-         */
+        /* At this point, there is at least one instruction in the pending
+         * queue, and the op variable points to the last instruction in the
+         * queue. */
+        return beamcodereader_next(code_reader, out);
+    case genop_int_code_end_0:
+        code_reader->pending = op;
+
+        if (!code_reader->first) {
+            synthesize_func_end(code_reader);
+        }
+
         op->next = NULL;
         return beamcodereader_next(code_reader, out);
+    default:
+        *out = op;
+        return 1;
     }
 }
 

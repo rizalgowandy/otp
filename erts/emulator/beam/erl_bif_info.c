@@ -103,9 +103,9 @@ static char erts_system_version[] = ("Erlang/OTP " ERLANG_OTP_RELEASE
 				     " [async-threads:%d]"
 #ifdef BEAMASM
 #ifdef NATIVE_ERLANG_STACK
-				     " [jit]"
+				     " [jit:ns%s]"
 #else
-				     " [jit:no-native-stack]"
+				     " [jit%s]"
 #endif
 #endif
 #ifdef ET_DEBUG
@@ -493,6 +493,7 @@ erts_print_system_version(fmtfn_t to, void *arg, Process *c_p)
 		      , total, online
 		      , dirty_cpu, dirty_cpu_onln, dirty_io
 		      , erts_async_max_threads
+              , (erts_frame_layout == ERTS_FRAME_LAYOUT_FP_RA ? ":fp" : "")
 	);
 }
 
@@ -1252,7 +1253,10 @@ process_info_bif(Process *c_p, Eterm pid, Eterm opt, int always_wrap, int pi2)
         goto send_signal;
     }
 
-    ERTS_BIF_PREP_RET(ret, res);
+    if (c_p == rp || !ERTS_PROC_HAS_INCOMING_SIGNALS(c_p))
+        ERTS_BIF_PREP_RET(ret, res);
+    else
+        ERTS_BIF_PREP_HANDLE_SIGNALS_RETURN(ret, c_p, res);
 
 done:
 
@@ -3577,7 +3581,7 @@ fun_info_2(BIF_ALIST_2)
 	    break;
 	case am_name:
             {
-                const ErtsCodeMFA *mfa = erts_code_to_codemfa((funp->fe)->address);
+                const ErtsCodeMFA *mfa = erts_get_fun_mfa(funp->fe);
                 hp = HAlloc(p, 3);
                 val = mfa->function;
             }
@@ -3652,8 +3656,9 @@ fun_info_mfa_1(BIF_ALIST_1)
     if (is_fun(fun)) {
         const ErtsCodeMFA *mfa;
         ErlFunThing* funp;
+
         funp = (ErlFunThing *) fun_val(fun);
-        mfa = erts_code_to_codemfa((funp->fe)->address);
+        mfa = erts_get_fun_mfa(funp->fe);
 
         hp = HAlloc(p, 4);
         BIF_RET(TUPLE3(hp,
@@ -3674,7 +3679,10 @@ BIF_RETTYPE erts_internal_is_process_alive_2(BIF_ALIST_2)
 {
     if (!is_internal_pid(BIF_ARG_1) || !is_internal_ordinary_ref(BIF_ARG_2))
         BIF_ERROR(BIF_P, BADARG);
-    erts_proc_sig_send_is_alive_request(BIF_P, BIF_ARG_1, BIF_ARG_2);
+    if (!erts_proc_sig_send_is_alive_request(BIF_P, BIF_ARG_1, BIF_ARG_2)) {
+        if (ERTS_PROC_HAS_INCOMING_SIGNALS(BIF_P))
+            ERTS_BIF_HANDLE_SIGNALS_RETURN(BIF_P, am_ok);
+    }
     BIF_RET(am_ok);
 }
 
@@ -4096,9 +4104,9 @@ BIF_RETTYPE erts_debug_get_internal_state_1(BIF_ALIST_1)
             UWord size;
             char c;
             if (erts_is_above_stack_limit(&c))
-                size = erts_check_stack_recursion_downwards(&c);
+                size = erts_check_stack_recursion_downwards(&c, &c);
             else
-                size = erts_check_stack_recursion_upwards(&c);
+                size = erts_check_stack_recursion_upwards(&c, &c);
 	    if (IS_SSMALL(size))
 		BIF_RET(make_small(size));
 	    else {
@@ -4344,15 +4352,6 @@ BIF_RETTYPE erts_debug_get_internal_state_1(BIF_ALIST_1)
 		    }
 		    BIF_RET(res);
 		}
-	    }
-	    else if (ERTS_IS_ATOM_STR("term_to_binary_tuple_fallbacks", tp[1])) {
-		Uint64 dflags = (TERM_TO_BINARY_DFLAGS
-                                 & ~DFLAG_EXPORT_PTR_TAG
-                                 & ~DFLAG_BIT_BINARIES);
-		Eterm res = erts_term_to_binary(BIF_P, tp[2], 0, dflags);
-                if (is_value(res))
-                    BIF_RET(res);
-                BIF_ERROR(BIF_P, SYSTEM_LIMIT);
 	    }
 	    else if (ERTS_IS_ATOM_STR("dist_ctrl", tp[1])) {
 		Eterm res = am_undefined;

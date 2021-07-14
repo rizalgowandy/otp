@@ -73,8 +73,10 @@ MODULES= \
 	guard_SUITE \
 	hash_SUITE \
 	hash_property_test_SUITE \
+	hello_SUITE \
 	hibernate_SUITE \
 	iovec_SUITE \
+	jit_SUITE \
 	list_bif_SUITE \
 	lttng_SUITE \
 	lcnt_SUITE \
@@ -91,7 +93,6 @@ MODULES= \
 	message_queue_data_SUITE \
 	op_SUITE \
 	os_signal_SUITE \
-	perf_SUITE \
 	port_SUITE \
 	port_bif_SUITE \
 	prim_eval_SUITE \

@@ -62,7 +62,7 @@
 
 %%% TEST_SERVER INTERFACE %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 -export([print/2, print/3, print/4, print_timestamp/2]).
--export([start_node/3, stop_node/1, wait_for_node/1, is_release_available/1]).
+-export([start_node/3, stop_node/1, wait_for_node/1, is_release_available/1, find_release/1]).
 -export([format/1, format/2, format/3, to_string/1]).
 -export([get_target_info/0]).
 -export([get_hosts/0]).
@@ -768,7 +768,7 @@ handle_call({reject_io_reqs,Bool}, _From, State) ->
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% handle_call({multiply_timetraps,N}, _, State) -> ok
-%% N = integer() | infinity
+%% N = number() | infinity
 %%
 %% Multiplies all timetraps set by test cases with N
 
@@ -962,6 +962,19 @@ handle_call({stop_node, Name}, _From, State) ->
 
 handle_call({is_release_available, Release}, _From, State) ->
     R = test_server_node:is_release_available(Release),
+    {reply, R, State};
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% handle_call({find_release,Name}, _, State) -> PathToReleaseErlFile | not_available
+%%
+%% Find the path of the release's erl file if available
+
+handle_call({find_release, Release}, _From, State) ->
+    R =
+        case test_server_node:is_release_available(Release) of
+            true -> test_server_node:find_release(Release);
+            _ -> not_available
+        end,
     {reply, R, State}.
 
 %%--------------------------------------------------------------------
@@ -2851,7 +2864,7 @@ run_test_cases_loop([{conf,Ref,Props,{Mod,Func}}|_Cases]=Cs0,
 	    stop_minor_log_file(),
 	    run_test_cases_loop(skip_cases_upto(Ref, Cases, Reason, conf,
 						CurrMode, skip_case),
-				[hd(Config)|Config], TimetrapData, Mode,
+				Config, TimetrapData, Mode,
 				delete_status(Ref, Status2));
 	{_,{skip_and_save,Reason,_SavedConfig},_} when StartConf ->
 	    ReportAbortRepeat(skipped),
@@ -5170,6 +5183,14 @@ wait_for_node(Slave) ->
 
 is_release_available(Release) ->
     controller_call({is_release_available,Release}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% handle_call({find_release,Name}, _, State) -> PathToReleaseErlFile | not_available
+%%
+%% Find the path of the release's erl file if available
+
+find_release(Release) ->
+    controller_call({find_release,Release}).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% stop_node(Name) -> ok | {error,Reason}

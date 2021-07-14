@@ -98,8 +98,10 @@
          unsupported_sign_algo_cert_client_auth/1,
          longer_chain/0,
          longer_chain/1,
-         duplicate_chain/0,
-         duplicate_chain/1,
+         cross_signed_chain/0,
+         cross_signed_chain/1,
+         expired_root_with_cross_signed_root/0,
+         expired_root_with_cross_signed_root/1,
          key_auth_ext_sign_only/0,
          key_auth_ext_sign_only/1,
          hello_retry_request/0,
@@ -147,7 +149,8 @@ groups() ->
      {rsa_pss_rsae_1_3, [], all_version_tests() ++ rsa_tests() ++ tls_1_3_tests() ++ tls_1_3_rsa_tests()},
      {rsa_pss_pss, [], all_version_tests() ++ rsa_tests()},
      {rsa_pss_pss_1_3, [], all_version_tests() ++ rsa_tests() ++ tls_1_3_tests() ++ tls_1_3_rsa_tests()},
-     {ecdsa_1_3, [], all_version_tests() ++ tls_1_3_tests()}
+     {ecdsa_1_3, [], all_version_tests() ++ tls_1_3_tests()},
+     {eddsa_1_3, [], all_version_tests() ++ tls_1_3_tests()}
     ].
 
 ssl_protocol_groups() ->
@@ -165,6 +168,7 @@ tls_1_2_protocol_groups() ->
 tls_1_3_protocol_groups() ->
     [{group, rsa_1_3},
      {group, ecdsa_1_3},
+     {group, eddsa_1_3},
      {group, rsa_pss_rsae_1_3},
      {group, rsa_pss_pss_1_3}
     ].
@@ -185,7 +189,9 @@ pre_tls_1_3_rsa_tests() ->
 
 rsa_tests() ->
    [
-    longer_chain
+    longer_chain,
+    cross_signed_chain,
+    expired_root_with_cross_signed_root
    ].
 
 tls_1_3_rsa_tests() ->
@@ -229,7 +235,6 @@ init_per_suite(Config) ->
     catch crypto:stop(),
     try crypto:start() of
 	ok ->
-	    ssl_test_lib:clean_start(),
             Config
     catch _:_ ->
 	    {skip, "Crypto did not start"}
@@ -244,6 +249,7 @@ end_per_suite(_Config) ->
 init_per_group(GroupName, Config) ->
     case ssl_test_lib:is_protocol_version(GroupName) of
         true  ->
+            ssl_test_lib:clean_start(),
             ssl_test_lib:init_per_group(GroupName, 
                                         [{client_type, erlang},
                                          {server_type, erlang},
@@ -289,7 +295,7 @@ do_init_per_group(Alg, Config) when Alg == rsa_pss_rsae;
             {skip, "Missing EC crypto support"}
     end;
 do_init_per_group(Group, Config0) when Group == ecdsa;
-                                    Group == ecdsa_1_3 ->
+                                       Group == ecdsa_1_3 ->
 
     PKAlg = crypto:supports(public_keys),
     case lists:member(ecdsa, PKAlg) andalso (lists:member(ecdh, PKAlg) orelse lists:member(dh, PKAlg)) of
@@ -307,12 +313,36 @@ do_init_per_group(Group, Config0) when Group == ecdsa;
         false ->
             {skip, "Missing EC crypto support"}
     end;
+do_init_per_group(eddsa_1_3, Config0) ->
+    PKAlg = crypto:supports(public_keys),
+    PrivDir = proplists:get_value(priv_dir, Config0),
+    case lists:member(eddsa, PKAlg) andalso (lists:member(ecdh, PKAlg)) of
+        true ->
+            Conf = public_key:pkix_test_data(#{server_chain => #{root => ssl_test_lib:eddsa_conf(),
+                                                                 intermediates => [ssl_test_lib:eddsa_conf()],
+                                                                 peer =>  ssl_test_lib:eddsa_conf()},
+                                               client_chain => #{root => ssl_test_lib:eddsa_conf(),
+                                                                 intermediates => [ssl_test_lib:eddsa_conf()],
+                                                                 peer =>  ssl_test_lib:eddsa_conf()}}),
+            [{server_config, SOpts},
+             {client_config, COpts}] = x509_test:gen_pem_config_files(Conf, filename:join(PrivDir, "client_eddsa"),
+                                                                      filename:join(PrivDir, "server_eddsa")),
 
-do_init_per_group(Group, Config0) when Group == dsa ->
+            [{cert_key_alg, eddsa} |
+             lists:delete(cert_key_alg,
+                          [{client_cert_opts, COpts},
+                           {server_cert_opts, SOpts} |
+                           lists:delete(server_cert_opts,
+                                        lists:delete(client_cert_opts, Config0))]
+                         )];
+        false ->
+            {skip, "Missing EC crypto support"}
+    end;
+do_init_per_group(dsa, Config0) ->
     PKAlg = crypto:supports(public_keys),
     case lists:member(dss, PKAlg) andalso lists:member(dh, PKAlg) of
         true ->
-            Config = ssl_test_lib:make_dsa_cert(Config0),    
+            Config = ssl_test_lib:make_dsa_cert(Config0),
             COpts = proplists:get_value(client_dsa_opts, Config),
             SOpts = proplists:get_value(server_dsa_opts, Config),
             [{cert_key_alg, dsa} |
@@ -324,7 +354,7 @@ do_init_per_group(Group, Config0) when Group == dsa ->
         false ->
             {skip, "Missing DSS crypto support"}
     end;
-do_init_per_group(Group, Config) ->
+do_init_per_group(_Group, Config) ->
     Config.
 
 end_per_group(GroupName, Config) ->
@@ -491,7 +521,9 @@ missing_root_cert_auth_user_verify_fun_reject(Config) ->
 incomplete_chain_auth() ->
     [{doc,"Test that we can verify an incompleat chain when we have the certs to rebuild it"}].
 incomplete_chain_auth(Config) when is_list(Config) ->
-    DefaultCertConf = ssl_test_lib:default_cert_chain_conf(),
+    Prop = proplists:get_value(tc_group_properties, Config),
+    Group = proplists:get_value(name, Prop),
+    DefaultCertConf = ssl_test_lib:default_ecc_cert_chain_conf(Group),
     #{client_config := ClientOpts0,
       server_config := ServerOpts0} = ssl_test_lib:make_cert_chains_der(proplists:get_value(cert_key_alg, Config),
                                                                         [{server_chain, DefaultCertConf},
@@ -608,7 +640,8 @@ critical_extension_auth() ->
     [{doc,"Test cert that has a critical unknown extension in verify_peer mode"}].
 
 critical_extension_auth(Config) when is_list(Config) ->
-    DefaultCertConf = ssl_test_lib:default_cert_chain_conf(),
+    Prop = proplists:get_value(tc_group_properties, Config),
+    DefaultCertConf = ssl_test_lib:default_ecc_cert_chain_conf(proplists:get_value(name, Prop)),
     Ext = x509_test:extensions([{{2,16,840,1,113730,1,1}, <<3,2,6,192>>, true}]),
     #{client_config := ClientOpts0,
       server_config := ServerOpts0}  = ssl_test_lib:make_cert_chains_der(proplists:get_value(cert_key_alg, Config),
@@ -674,7 +707,8 @@ critical_extension_no_auth() ->
     [{doc,"Test cert that has a critical unknown extension in verify_none mode"}].
 
 critical_extension_no_auth(Config) when is_list(Config) ->
-    DefaultCertConf = ssl_test_lib:default_cert_chain_conf(),
+    Prop = proplists:get_value(tc_group_properties, Config),
+    DefaultCertConf = ssl_test_lib:default_ecc_cert_chain_conf(proplists:get_value(name, Prop)),
     Ext = x509_test:extensions([{{2,16,840,1,113730,1,1}, <<3,2,6,192>>, true}]),
     #{client_config := ClientOpts0,
       server_config := ServerOpts0}  = ssl_test_lib:make_cert_chains_der(proplists:get_value(cert_key_alg, Config),
@@ -692,7 +726,8 @@ extended_key_usage_auth() ->
     [{doc,"Test cert that has a critical extended_key_usage extension in server cert"}].
 
 extended_key_usage_auth(Config) when is_list(Config) -> 
-    DefaultCertConf = ssl_test_lib:default_cert_chain_conf(),
+    Prop = proplists:get_value(tc_group_properties, Config),
+    DefaultCertConf = ssl_test_lib:default_ecc_cert_chain_conf(proplists:get_value(name, Prop)),
     Ext = x509_test:extensions([{?'id-ce-extKeyUsage',
                                  [?'id-kp-serverAuth'], true}]),
     #{client_config := ClientOpts0,
@@ -762,7 +797,8 @@ cert_expired() ->
     [{doc,"Test server with expired certificate"}].
 
 cert_expired(Config) when is_list(Config) ->
-    DefaultCertConf = ssl_test_lib:default_cert_chain_conf(),
+    Prop = proplists:get_value(tc_group_properties, Config),
+    DefaultCertConf = ssl_test_lib:default_ecc_cert_chain_conf(proplists:get_value(name, Prop)),
     {Year, Month, Day} = date(),
     #{client_config := ClientOpts0,
       server_config := ServerOpts0} = ssl_test_lib:make_cert_chains_der(proplists:get_value(cert_key_alg, Config),
@@ -872,9 +908,9 @@ longer_chain(Config) when is_list(Config) ->
                                            proplists:delete(cacerts, ClientOpts0)], Config),
     ssl_test_lib:basic_test(ClientOpts, ServerOpts, Config).
 
-duplicate_chain() ->
-    [{doc, "Manual test of chain with duplicate entries"}].
-duplicate_chain(Config)
+cross_signed_chain() ->
+    [{doc, "Manual test of chain with duplicate entries that is cross signing certs are present."}].
+cross_signed_chain(Config)
   when is_list(Config) ->
     Key1 = ssl_test_lib:hardcode_rsa_key(1),
     Key2 = ssl_test_lib:hardcode_rsa_key(2),
@@ -922,11 +958,61 @@ duplicate_chain(Config)
     ssl_test_lib:basic_test(ClientOpts2, ServerOpts, Config),
     ok.
 
-chain_and_root(Config) ->
-    OwnCert = proplists:get_value(cert, Config),
-    {ok, ExtractedCAs} = ssl_pkix_db:extract_trusted_certs({der, proplists:get_value(cacerts, Config)}),
-    {ok, Root, Chain} = ssl_certificate:certificate_chain(OwnCert, ets:new(foo, []), ExtractedCAs, []),
-    {Chain, Root}.
+expired_root_with_cross_signed_root() ->
+    [{doc,"Test that we can verify a chain with an expired Root Cert if there is an alternative chain with"
+      " a cross signed Root CA further down the chain that is however not present in the sent chain"}].
+expired_root_with_cross_signed_root(Config) when is_list(Config) ->
+
+    Key1 = ssl_test_lib:hardcode_rsa_key(1),
+    Key2 = ssl_test_lib:hardcode_rsa_key(2),
+    Key3 = ssl_test_lib:hardcode_rsa_key(3),
+    Key4 = ssl_test_lib:hardcode_rsa_key(4),
+    Key5 = ssl_test_lib:hardcode_rsa_key(5),
+    Key6 = ssl_test_lib:hardcode_rsa_key(6),
+    {Year, Month, Day} = date(),
+
+    %% Create expired ROOT
+    #{cert := Root} = SRoot = public_key:pkix_test_root_cert("OTP test server ROOT", [{key, Key1},
+                                                                    {validity, {{Year-2, Month, Day},
+                                                                                {Year-1, Month, Day}}}]),
+    #{server_config := ServerOpts, client_config := ClientOpts} =
+        public_key:pkix_test_data(#{server_chain => #{root => SRoot,
+                                                      intermediates => [[{key, Key2}], [{key, Key3}]],
+                                                      peer => [{key, Key4}]},
+                                    client_chain => #{root => [{key, Key5}],
+                                                      peer => [{key, Key6}]}}),
+
+    SCert = proplists:get_value(cert, ServerOpts),
+    SCerts = proplists:get_value(cacerts, ServerOpts),
+
+    {ok, ExtractedCAs} = ssl_pkix_db:extract_trusted_certs({der, SCerts}),
+    {ok, Root, [_Peer, CA1, CA2, Root]} = ssl_certificate:certificate_chain(SCert, ets:new(foo, []), 
+                                                                            ExtractedCAs, [], encoded),
+
+    OTPCA1 = public_key:pkix_decode_cert(CA1, otp),
+    OTPCA2 = public_key:pkix_decode_cert(CA2, otp),
+
+    TBS1 = OTPCA1#'OTPCertificate'.tbsCertificate,
+    TBS2 = OTPCA2#'OTPCertificate'.tbsCertificate,
+
+    Issuer = TBS1#'OTPTBSCertificate'.issuer,
+
+    SubjectPublicKeyInfo = TBS2#'OTPTBSCertificate'.subjectPublicKeyInfo,
+
+    AltCrossRoot = public_key:pkix_sign(TBS1#'OTPTBSCertificate'{subject = Issuer,
+                                                                 subjectPublicKeyInfo = SubjectPublicKeyInfo}, Key2),
+
+    ClientCas0 = proplists:get_value(cacerts, ClientOpts),
+
+    %% Only expired ROOT present
+    ssl_test_lib:basic_alert([{verify, verify_peer} | ClientOpts], ServerOpts, Config, certificate_expired),
+    %% Only CROSS ROOT present
+    ssl_test_lib:basic_test([{verify, verify_peer},
+                             {cacerts, [AltCrossRoot]} | proplists:delete(cacerts, ClientOpts)], ServerOpts, Config),
+    %% Both expired ROOT and CROSS ROOT present
+    ssl_test_lib:basic_test([{verify, verify_peer},
+                             {cacerts, [AltCrossRoot | ClientCas0]} | proplists:delete(cacerts, ClientOpts)],
+                            ServerOpts, Config).
 
 %%--------------------------------------------------------------------
 %% TLS 1.3 Test cases  -----------------------------------------------
@@ -1087,3 +1173,9 @@ no_reuse({3, N}) when N >= 4 ->
     [];
 no_reuse(_) ->
     [{reuse_sessions, false}].
+
+chain_and_root(Config) ->
+    OwnCert = proplists:get_value(cert, Config),
+    {ok, ExtractedCAs} = ssl_pkix_db:extract_trusted_certs({der, proplists:get_value(cacerts, Config)}),
+    {ok, Root, Chain} = ssl_certificate:certificate_chain(OwnCert, ets:new(foo, []), ExtractedCAs, [], encoded),
+    {Chain, Root}.

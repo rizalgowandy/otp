@@ -323,6 +323,10 @@ stacktrace(Conf) when is_list(Conf) ->
         stacktrace_1({value,V}, error, {value,V}),
     {caught2,{throw,V},[{?MODULE,foo,1,_}|_]} =
         stacktrace_1({value,V}, error, {throw,V}),
+    {caught2,{error,V},[{?MODULE,foo,[a],_}|_]} =
+        stacktrace_1({value,V}, error, {error,{V,[a]}}),
+    {caught2,{error,V},[{?MODULE,foo,1,_}|_]} =
+        stacktrace_1({value,V}, error, {error,{V,none}}),
 
     try
         stacktrace_2()
@@ -442,7 +446,9 @@ foo({'add',{A,B}}) ->
     my_add(A, B);
 foo({'abs',X}) ->
     my_abs(X);
-foo({error,Error}) -> 
+foo({error,{Error, Args}}) ->
+    erlang:error(Error, Args);
+foo({error,Error}) ->
     erlang:error(Error);
 foo({throw,Throw}) ->
     erlang:throw(Throw);
@@ -675,6 +681,7 @@ do_error_3(Reason, Args, Options) ->
 error_info(_Config) ->
     DeadProcess = dead_process(),
     NewAtom = non_existing_atom(),
+    Eons = 1 bsl 50,
 
     %% We'll need an incorrect memory type for erlang:memory/1. We want to test an
     %% incorrect atom if our own allocators are enabled, but if they are disabled,
@@ -684,6 +691,11 @@ error_info(_Config) ->
                     catch
                         error:notsup -> 999
                     end,
+
+    %% Pick up external pid and port.
+    {ok, ExternalNode} = test_server:start_node(?FUNCTION_NAME, slave, []),
+    ExternalPid = rpc:call(ExternalNode, erlang, whereis, [code_server]),
+    ExternalPort = hd(rpc:call(ExternalNode, erlang, ports, [])),
 
     L = [{abs, [abc]},
          {adler32, [{bad,data}]},
@@ -732,7 +744,9 @@ error_info(_Config) ->
          {binary_to_existing_atom, [abc, latin1]},
          {binary_to_existing_atom, [<<128,128,255>>,utf8]},
          {binary_to_existing_atom, [list_to_binary(NewAtom), latin1]},
+         {binary_to_existing_atom, [list_to_binary(NewAtom), utf8]},
          {binary_to_existing_atom, [list_to_binary(NewAtom), utf42]},
+         {binary_to_existing_atom, [[<<"abc">>], utf8]},
          {binary_to_existing_atom, [<<0:512/unit:8>>, latin1]},
 
          {binary_to_float, [abc]},
@@ -772,7 +786,9 @@ error_info(_Config) ->
          {ceil, [abc]},
 
          {check_old_code, [{a,b,c}]},
+
          {check_process_code, [self(), {no,module}]},
+         {check_process_code, [ExternalPid, code_server]},
          {check_process_code, [no_pid, {no,module}]},
          {check_process_code, [self(), abc, bad_option_list]},
          {check_process_code, [self(), abc, [abc]]},
@@ -866,7 +882,9 @@ error_info(_Config) ->
          {function_exported, [1,2,abc]},
 
          {garbage_collect, [not_a_pid]},
+         {garbage_collect, [ExternalPid]},
          {garbage_collect, [not_a_pid, bad_option_list]},
+         {garbage_collect, [ExternalPid, bad_option_list]},
 
          {gather_gc_info_result, 1},            %Internal BIF.
 
@@ -980,9 +998,12 @@ error_info(_Config) ->
 
          {monitor, [moon, whatever]},
          {monitor, [port, self()]},
-         {monitor, [moon, whatever, []]},
+         {monitor, [port, ExternalPort]},
 
+         {monitor, [moon, whatever, []]},
          {monitor, [port, self(), []]},
+         {monitor, [port, ExternalPort, []]},
+         {monitor, [port, ExternalPort, [bad_option]]},
          {monitor, [process, self(), [bad_option]]},
          {monitor, [process, self(), not_a_list]},
 
@@ -1007,21 +1028,35 @@ error_info(_Config) ->
          {open_port, [{spawn, "no_command"}, [xyz]]},
 
          {port_call, 2},                        %Internal BIF.
+
          {port_call, [{no,port}, b, data]},
          {port_call, [{no,port}, -1, data]},
          {port_call, [{no,port}, 1 bsl 32, data]},
+         {port_call, [ExternalPort, b, data]},
 
          {port_close, [{no,port}]},
+         {port_close, [ExternalPort]},
 
          {port_command, [{no,port}, [a|b]]},
+
          {port_command, [{no,port}, [command], [whatever]]},
          {port_command, [{no,port}, [command], whatever]},
+         {port_command, [ExternalPort, [command], whatever]},
 
          {port_connect, [{no,port}, whatever]},
+         {port_connect, [{no,port}, self()]},
+         {port_connect, [{no,port}, ExternalPid]},
+         {port_connect, [ExternalPort, self()]},
+
          {port_control, [{no,port}, -1, {a,b,c}]},
+         {port_control, [ExternalPort, -1, {a,b,c}]},
 
          {port_info, [{no,port}]},
+         {port_info, [ExternalPort]},
+
          {port_info, [{no,port}, bad_info]},
+         {port_info, [ExternalPort, name]},
+         {port_info, [ExternalPort, bad_info]},
 
          %% Internal undocumented BIFs.
          {port_get_data, 1},
@@ -1036,15 +1071,27 @@ error_info(_Config) ->
 
          {process_display, [bad_pid, whatever]},
          {process_display, [self(), whatever]},
+         {process_display, [ExternalPid, backtrace]},
+         {process_display, [ExternalPid, whatever]},
+         {process_display, [DeadProcess, backtrace]},
 
          {process_flag, [trap_exit, some_value]},
          {process_flag, [bad_flag, some_value]},
 
          {process_flag, [self(), bad_flag, some_value]},
+         {process_flag, [self(), save_calls, not_integer]},
+         {process_flag, [self(), save_calls, 1 bsl 64]},
+         {process_flag, [ExternalPid, save_calls, 20]},
+         {process_flag, [ExternalPid, save_calls, not_integer]},
+         {process_flag, [ExternalPid, bad_flag, some_value]},
          {process_flag, [DeadProcess, save_calls, 20]},
+         {process_flag, [DeadProcess, not_save_save_calls, 20]},
 
          {process_info, [42]},
-         {process_info, [self(),{a,b,c}]},
+         {process_info, [ExternalPid]},
+
+         {process_info, [self(), {a,b,c}]},
+         {process_info, [ExternalPid, current_function]},
 
          {purge_module, [{no,module}]},
 
@@ -1062,18 +1109,29 @@ error_info(_Config) ->
          {register, [code_server, self()]},
          {register, [my_registered_name, whereis(code_server)]},
          {register, [my_registered_name, DeadProcess]},
+         {register, [my_registered_name, ExternalPid]},
+         {register, [my_registered_name, ExternalPort]},
 
          {resume_process, [abc]},
          {resume_process, [self()]},
+         {resume_process, [DeadProcess]},
+         {resume_process, [ExternalPid]},
 
          {round, [abc]},
 
          {send, [[bad,dest], message]},
          {send, [[bad,dest], message, bad]},
 
+         {send_after, [Eons, self(), message]},
+         {send_after, [Eons, {bad,dest}, message]},
          {send_after, [bad_time, {bad,dest}, message]},
+         {send_after, [20, ExternalPid, message]},
+
+         {send_after, [Eons, self(), message, bad_options]},
+         {send_after, [Eons, {bad,dest}, message, bad_options]},
          {send_after, [bad_time, {bad,dest}, message, bad_options]},
          {send_after, [20, self(), message, [bad]]},
+         {send_after, [20, ExternalPid, message, []]},
 
          {send_nosuspend, [bad_pid, message]},
          {send_nosuspend, [bad_pid, message, []]},
@@ -1149,18 +1207,26 @@ error_info(_Config) ->
          {split_binary, [a, -1]},
          {split_binary, [<<>>, 1]},
 
+         {start_timer, [Eons, self(), message]},
+         {start_timer, [Eons, {bad,dest}, message]},
          {start_timer, [bad_time, {bad,dest}, message]},
+
+         {start_timer, [Eons, self(), message, []]},
+         {start_timer, [Eons, {bad,dest}, message, [bad]]},
          {start_timer, [bad_time, {bad,dest}, message, bad_options]},
          {start_timer, [20, self(), message, [bad]]},
+         {start_timer, [20, ExternalPid, message, []]},
 
          {statistics, [abc]},
          {statistics, [{a,b,c}]},
          {subtract, [a,b]},
 
          {suspend_process, [self()]},
+         {suspend_process, [ExternalPid]},
          {suspend_process, [not_a_pid]},
 
          {suspend_process, [self(), []]},
+         {suspend_process, [ExternalPid, []]},
          {suspend_process, [not_a_pid, []]},
          {suspend_process, [not_a_pid, [bad_option]]},
 
@@ -1171,7 +1237,13 @@ error_info(_Config) ->
          {system_info, [bad_item]},
 
          {system_monitor, [whatever]},
+         {system_monitor, [ExternalPid]},
+
+         {system_monitor, [not_pid, bad_list]},
          {system_monitor, [self(), bad_list]},
+         {system_monitor, [self(), [bad]]},
+         {system_monitor, [ExternalPid, [busy_port]]},
+         {system_monitor, [ExternalPid, [bad]]},
          {system_monitor, [self(), [bad]]},
 
          %% Complex error reasons. Ignore for now.
@@ -1190,6 +1262,9 @@ error_info(_Config) ->
          {time_offset, [fortnight]},
          {tl, [abc]},
 
+         {trace, [ExternalPid, true, all]},
+         {trace, [ExternalPid, not_boolean, bad_flags]},
+         {trace, [ExternalPort, true, all]},
          {trace, [a, not_boolean, bad_flags]},
          {trace, [a, not_boolean, [bad_flag]]},
          {trace, [a, true, [a|b]]},
@@ -1198,10 +1273,15 @@ error_info(_Config) ->
          {trace_pattern, [a, b, c]},
          {trace_pattern, [{?MODULE,'_','_'}, [{[self(), '_'],[],[]}], [call_count]]},
 
+         {trace_delivered, [ExternalPid]},
          {trace_delivered, [abc]},
 
+         {trace_info, [ExternalPid, flags]},
+         {trace_info, [ExternalPid, bad_item]},
+         {trace_info, [ExternalPort, flags]},
+         {trace_info, [ExternalPort, bad_item]},
          {trace_info, [self(), bad_item]},
-         {trace_info, [not_a_registered_process, flags]},
+         {trace_info, [bad_tracee_spec, flags]},
 
          {trunc, [abc]},
          {tuple_size, [<<"abc">>]},
@@ -1216,7 +1296,11 @@ error_info(_Config) ->
          {unregister, [{a,b,c}]},
          {whereis, [self()]}
         ],
-    do_error_info(L).
+    try
+        do_error_info(L)
+    after
+        test_server:stop_node(ExternalNode)
+    end.
 
 dead_process() ->
     {Pid,Ref} = spawn_monitor(fun() -> ok end),
@@ -1342,11 +1426,23 @@ line_numbers(Config) when is_list(Config) ->
                [{file,"fake_file.erl"},{line,3}]},
               {?MODULE,line_numbers,1,_}|_]}} =
     (catch line1(bad_tag, 0)),
-    {'EXIT',{badarith,
-             [{?MODULE,line1,2,
-               [{file,"fake_file.erl"},{line,5}]},
-              {?MODULE,line_numbers,1,_}|_]}} =
-    (catch line1(a, not_an_integer)),
+
+    %% The stacktrace for operators such a '+' can vary depending on
+    %% whether the JIT is used or not.
+    case catch line1(a, not_an_integer) of
+        {'EXIT',{badarith,
+                 [{erlang,'+',[not_an_integer,1],_},
+                  {?MODULE,line1,2,
+                   [{file,"fake_file.erl"},{line,5}]},
+                  {?MODULE,line_numbers,1,_}|_]}} ->
+            ok;
+        {'EXIT',{badarith,
+                 [{?MODULE,line1,2,
+                   [{file,"fake_file.erl"},{line,5}]},
+                  {?MODULE,line_numbers,1,_}|_]}} ->
+            ok
+    end,
+
     {'EXIT',{{badmatch,{ok,1}},
              [{?MODULE,line1,2,
                [{file,"fake_file.erl"},{line,7}]},
@@ -1430,14 +1526,29 @@ line_numbers(Config) when is_list(Config) ->
               {?MODULE,line_numbers,1,_}|_]}} =
     (catch applied_bif_2()),
 
-    {'EXIT',{badarith,
-             [{?MODULE,increment1,1,[{file,"increment.erl"},{line,45}]},
-              {?MODULE,line_numbers,1,_}|_]}} =
-        (catch increment1(x)),
-    {'EXIT',{badarith,
-             [{?MODULE,increment2,1,[{file,"increment.erl"},{line,48}]},
-              {?MODULE,line_numbers,1,_}|_]}} =
-        (catch increment2(x)),
+    case catch increment1(x) of
+        {'EXIT',{badarith,
+                 [{erlang,'+',[x,1],_},
+                  {?MODULE,increment1,1,[{file,"increment.erl"},{line,45}]},
+                  {?MODULE,line_numbers,1,_}|_]}} ->
+            ok;
+        {'EXIT',{badarith,
+                 [{?MODULE,increment1,1,[{file,"increment.erl"},{line,45}]},
+                  {?MODULE,line_numbers,1,_}|_]}} ->
+            ok
+    end,
+
+    case catch increment2(x) of
+        {'EXIT',{badarith,
+                 [{erlang,'+',[x,1],_},
+                  {?MODULE,increment2,1,[{file,"increment.erl"},{line,48}]},
+                  {?MODULE,line_numbers,1,_}|_]}} ->
+            ok;
+        {'EXIT',{badarith,
+                 [{?MODULE,increment2,1,[{file,"increment.erl"},{line,48}]},
+                  {?MODULE,line_numbers,1,_}|_]}} ->
+            ok
+    end,
 
     {'EXIT',{{badmap,not_a_map},
              [{?MODULE,update_map,1,[{file,"map.erl"},{line,3}]}|_]}} =

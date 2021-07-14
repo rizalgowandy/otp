@@ -1,7 +1,7 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2000-2017. All Rights Reserved.
+ * Copyright Ericsson AB 2000-2021. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -565,6 +565,11 @@ public abstract class AbstractConnection extends Thread {
                     // received tick? send tock!
                     if (len == 0) {
                         synchronized (this) {
+                            if (socket == null) {
+                                // protect from a potential thin race when the
+                                // connection to the remote node is closed
+                                throw new IOException("socket was closed");
+                            }
                             OutputStream out = socket.getOutputStream();
                             out.write(tock);
                             out.flush();
@@ -1278,14 +1283,13 @@ public abstract class AbstractConnection extends Thread {
                 throw new IOException("Unknown remote node type");
             }
 
-            if ((apeer.flags & AbstractNode.dFlagExtendedReferences) == 0) {
-                throw new IOException(
-                        "Handshake failed - peer cannot handle extended references");
+            if ((apeer.flags & AbstractNode.dFlagMandatory25Digest) != 0) {
+                apeer.flags |= AbstractNode.mandatoryFlags25;
             }
 
-            if ((apeer.flags & AbstractNode.dFlagExtendedPidsPorts) == 0) {
+            if ((apeer.flags & AbstractNode.mandatoryFlags) != AbstractNode.mandatoryFlags) {
                 throw new IOException(
-                        "Handshake failed - peer cannot handle extended pids and ports");
+                        "Handshake failed - peer cannot handle all mandatory capabilities");
             }
 
         } catch (final OtpErlangDecodeException e) {
@@ -1344,14 +1348,13 @@ public abstract class AbstractConnection extends Thread {
                         "Handshake failed - peer has wrong name: " + hisname);
             }
 
-            if ((peer.flags & AbstractNode.dFlagExtendedReferences) == 0) {
-                throw new IOException(
-                        "Handshake failed - peer cannot handle extended references");
+            if ((peer.flags & AbstractNode.dFlagMandatory25Digest) != 0) {
+                peer.flags |= AbstractNode.mandatoryFlags25;
             }
 
-            if ((peer.flags & AbstractNode.dFlagExtendedPidsPorts) == 0) {
+            if ((peer.flags & AbstractNode.mandatoryFlags) != AbstractNode.mandatoryFlags) {
                 throw new IOException(
-                        "Handshake failed - peer cannot handle extended pids and ports");
+                        "Handshake failed - peer cannot handle all mandatory capabilities");
             }
 
         } catch (final OtpErlangDecodeException e) {

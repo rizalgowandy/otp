@@ -101,10 +101,16 @@
 #endif
 
 
+
 #if OPENSSL_VERSION_NUMBER < PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
 # define NEED_EVP_COMPATIBILITY_FUNCTIONS
 #endif
 
+#ifndef HAS_LIBRESSL
+# if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,1,0)
+#  define HAS_BN_bn2binpad
+# endif
+#endif
 
 #ifndef HAS_LIBRESSL
 # if OPENSSL_VERSION_NUMBER >= PACKED_OPENSSL_VERSION_PLAIN(1,0,0)
@@ -412,6 +418,15 @@ do {                                                    \
 #  define PRINTF_ERR1(FMT,A1)
 #  define PRINTF_ERR2(FMT,A1,A2)
 #endif
+
+#if defined(FIPS_SUPPORT) \
+    && OPENSSL_VERSION_NUMBER  < PACKED_OPENSSL_VERSION_PLAIN(1,0,1)
+/* FIPS is not supported for versions < 1.0.1.  If FIPS_SUPPORT is enabled
+   there are some warnings/errors for thoose
+*/
+# undef FIPS_SUPPORT
+#endif
+
 
 #ifdef FIPS_SUPPORT
 /* In FIPS mode non-FIPS algorithms are disabled and return badarg. */

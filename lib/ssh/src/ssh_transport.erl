@@ -284,7 +284,7 @@ is_valid_mac(_, _ , #ssh{recv_mac_size = 0}) ->
     true;
 is_valid_mac(Mac, Data, #ssh{recv_mac = Algorithm,
 			     recv_mac_key = Key, recv_sequence = SeqNum}) ->
-    crypto:equal_const_time(Mac, mac(Algorithm, Key, SeqNum, Data)).
+    ssh_lib:comp(Mac, mac(Algorithm, Key, SeqNum, Data)).
 
 handle_hello_version(Version) ->
     try
@@ -378,11 +378,9 @@ handle_kexinit_msg(#ssh_msg_kexinit{} = CounterPart, #ssh_msg_kexinit{} = Own,
 				   Ssh#ssh{algorithms = Algos})
     catch
         Class:Error ->
-            ?DISCONNECT(?SSH_DISCONNECT_KEY_EXCHANGE_FAILED,
-                        io_lib:format("Kexinit failed in client: ~p:~p",
-                                      [Class,Error])
-                       )
-    end;
+            Msg = kexinit_error(Class, Error, client, Own, CounterPart),
+            ?DISCONNECT(?SSH_DISCONNECT_KEY_EXCHANGE_FAILED, Msg)
+        end;
 
 handle_kexinit_msg(#ssh_msg_kexinit{} = CounterPart, #ssh_msg_kexinit{} = Own,
                    #ssh{role = server} = Ssh) ->
@@ -395,11 +393,57 @@ handle_kexinit_msg(#ssh_msg_kexinit{} = CounterPart, #ssh_msg_kexinit{} = Own,
             {ok, Ssh#ssh{algorithms = Algos}}
     catch
         Class:Error ->
-            ?DISCONNECT(?SSH_DISCONNECT_KEY_EXCHANGE_FAILED,
-                        io_lib:format("Kexinit failed in server: ~p:~p",
-                                      [Class,Error])
-                       )
+            Msg = kexinit_error(Class, Error, server, Own, CounterPart),
+            ?DISCONNECT(?SSH_DISCONNECT_KEY_EXCHANGE_FAILED, Msg)
     end.
+
+kexinit_error(Class, Error, Role, Own, CounterPart) ->
+    {Fmt,Args} =
+        case {Class,Error} of
+            {error, {badmatch,{false,Alg}}} ->
+                {Txt,W,C} = alg_info(Role, Alg),
+                {"No common ~s algorithm,~n"
+                 "  we have:~n    ~s~n"
+                 "  peer have:~n    ~s~n",
+                 [Txt,
+                  lists:join(", ", element(W,Own)),
+                  lists:join(", ", element(C,CounterPart))
+                 ]};
+            _ ->
+                {"Kexinit failed in ~p: ~p:~p", [Role,Class,Error]}
+        end,
+    io_lib:format(Fmt, Args).
+
+alg_info(client, Alg) ->
+    alg_info(Alg);
+alg_info(server, Alg) ->
+    {Txt,C2s,S2c} = alg_info(Alg),
+    {Txt,S2c,C2s}.
+
+alg_info("kex") ->        {"key exchange",
+                           #ssh_msg_kexinit.kex_algorithms,
+                           #ssh_msg_kexinit.kex_algorithms};
+alg_info("hkey") ->       {"key",
+                           #ssh_msg_kexinit.server_host_key_algorithms,
+                           #ssh_msg_kexinit.server_host_key_algorithms};
+alg_info("send_mac") ->    {"mac",
+                           #ssh_msg_kexinit.mac_algorithms_client_to_server,
+                           #ssh_msg_kexinit.mac_algorithms_server_to_client};
+alg_info("recv_mac") ->    {"mac",
+                           #ssh_msg_kexinit.mac_algorithms_client_to_server,
+                           #ssh_msg_kexinit.mac_algorithms_server_to_client};
+alg_info("encrypt") ->   {"cipher",
+                           #ssh_msg_kexinit.encryption_algorithms_client_to_server,
+                           #ssh_msg_kexinit.encryption_algorithms_server_to_client};
+alg_info("decrypt") ->   {"cipher",
+                           #ssh_msg_kexinit.encryption_algorithms_client_to_server,
+                           #ssh_msg_kexinit.encryption_algorithms_server_to_client};
+alg_info("compress") ->   {"compress",
+                           #ssh_msg_kexinit.compression_algorithms_client_to_server,
+                           #ssh_msg_kexinit.compression_algorithms_server_to_client};
+alg_info("decompress") -> {"compress",
+                           #ssh_msg_kexinit.compression_algorithms_client_to_server,
+                           #ssh_msg_kexinit.compression_algorithms_server_to_client}.
 
 
 verify_algorithm(#alg{kex = undefined})       ->  {false, "kex"};
@@ -914,31 +958,31 @@ accepted_host(Ssh, PeerName, Port, Public, Opts) ->
                                    "~s host key fingerprint is ~s.~n"
                                    "New host ~p~p accept",
                                    [fmt_hostkey(HostKeyAlg),
-                                    public_key:ssh_hostkey_fingerprint(Alg,Public),
+                                    ssh:hostkey_fingerprint(Alg,Public),
                                     PeerName, PortStr]),
             yes == yes_no(Ssh, Prompt);
 
         %% Call-back alternatives: A user provided fun is called for the decision:
         F when is_function(F,2) ->
-            case catch F(PeerName, public_key:ssh_hostkey_fingerprint(Public)) of
+            case catch F(PeerName, ssh:hostkey_fingerprint(Public)) of
                 true -> true;
                 _ -> {error, fingerprint_check_failed}
             end;
 
         F when is_function(F,3) ->
-            case catch F(PeerName, Port, public_key:ssh_hostkey_fingerprint(Public)) of
+            case catch F(PeerName, Port, ssh:hostkey_fingerprint(Public)) of
                 true -> true;
                 _ -> {error, fingerprint_check_failed}
             end;
 
 	{DigestAlg,F} when is_function(F,2) ->
-            case catch F(PeerName, public_key:ssh_hostkey_fingerprint(DigestAlg,Public)) of
+            case catch F(PeerName, ssh:hostkey_fingerprint(DigestAlg,Public)) of
                 true -> true;
                 _ -> {error, {fingerprint_check_failed,DigestAlg}}
             end;
 
 	{DigestAlg,F} when is_function(F,3) ->
-            case catch F(PeerName, Port, public_key:ssh_hostkey_fingerprint(DigestAlg,Public)) of
+            case catch F(PeerName, Port, ssh:hostkey_fingerprint(DigestAlg,Public)) of
                 true -> true;
                 _ -> {error, {fingerprint_check_failed,DigestAlg}}
             end
@@ -1734,7 +1778,7 @@ decrypt(#ssh{decrypt = 'chacha20-poly1305@openssh.com',
             %% The length is already decrypted and used to divide the input
             %% Check the mac (important that it is timing-safe):
             PolyKey = crypto:crypto_one_time(chacha20, K2, <<0:8/unit:8,Seq:8/unit:8>>, <<0:32/unit:8>>, false),
-            case crypto:equal_const_time(Ctag, crypto:mac(poly1305, PolyKey, <<AAD/binary,Ctext/binary>>)) of
+            case ssh_lib:comp(Ctag, crypto:mac(poly1305, PolyKey, <<AAD/binary,Ctext/binary>>)) of
                 true ->
                     %% MAC is ok, decode
                     IV2 = <<1:8/little-unit:8, Seq:8/unit:8>>,

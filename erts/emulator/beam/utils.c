@@ -60,6 +60,7 @@
 #include "erl_nfunc_sched.h"
 #include "erl_proc_sig_queue.h"
 #include "erl_unicode.h"
+#include "beam_common.h"
 
 /* *******************************
  * ** Yielding C Fun (YCF) Note **
@@ -84,7 +85,6 @@ typedef struct
     byte* pivot_part_end;
 } erts_qsort_partion_array_result;
 
-typedef int (*erts_void_ptr_cmp_t)(const void *, const void *);
 static void erts_qsort_swap(size_t item_size, void* ivp, void* jvp);
 static void erts_qsort_insertion_sort(byte *base,
                                       size_t nr_of_items,
@@ -2343,23 +2343,15 @@ make_internal_hash(Eterm term, Uint32 salt)
             case EXTERNAL_PID_SUBTAG: {
                 ExternalThing* thing = external_thing_ptr(term);
                 /* See limitation #2 */
-            #ifdef ARCH_64
                 POINTER_HASH(thing->node, HCONST_5);
-                UINT32_HASH(thing->data.ui[0], HCONST_5);
-            #else
-                UINT32_HASH_2(thing->node, thing->data.ui[0], HCONST_5);
-            #endif
+                UINT32_HASH_2(thing->data.pid.num, thing->data.pid.ser, HCONST_5);
 		goto pop_next;
             }
 	    case EXTERNAL_PORT_SUBTAG: {
                 ExternalThing* thing = external_thing_ptr(term);
                 /* See limitation #2 */
-            #ifdef ARCH_64
                 POINTER_HASH(thing->node, HCONST_6);
-                UINT32_HASH(thing->data.ui[0], HCONST_6);
-            #else
-                UINT32_HASH_2(thing->node, thing->data.ui[0], HCONST_6);
-            #endif
+                UINT32_HASH_2(thing->data.ui32[0], thing->data.ui32[1], HCONST_6);
 		goto pop_next;
             }
 	    case FLOAT_SUBTAG:
@@ -5191,30 +5183,21 @@ static void erts_qsort_swap(size_t item_size,
                             void* iptr,
                             void* jptr)
 {
-    if (item_size % sizeof(UWord) == 0) {
+    ASSERT(item_size % sizeof(UWord) == 0);
+
+    if (iptr != jptr) {
         /* Do it word by word */
         UWord* iwp = (UWord*) iptr;
         UWord* jwp = (UWord*) jptr;
 	size_t cnt;
         for (cnt = item_size / sizeof(UWord); cnt; cnt--) {
-            UWord tmp = *jwp;
-            *jwp = *iwp;
-            *iwp = tmp;
+            UWord tmp;
+	    sys_memcpy(&tmp, jwp, sizeof(UWord));
+	    sys_memcpy(jwp, iwp, sizeof(UWord));
+	    sys_memcpy(iwp, &tmp, sizeof(UWord));
 	    jwp++;
             iwp++;
         }
-    }
-    else {
-	/* Do it byte by byte (this can be optimized) */
-	byte* ibyteptr = (byte*)iptr;
-	byte* jbyteptr = (byte*)jptr;
-	for (size_t i = 0; i < item_size; i++) {
-	    char tmp = jbyteptr[0];
-	    jbyteptr[0] = ibyteptr[0];
-	    ibyteptr[0] = tmp;
-	    jbyteptr++;
-	    ibyteptr++;
-	}
     }
 }
 
@@ -5246,7 +5229,6 @@ erts_qsort_partion_array(byte *base,
      */
     byte* second_part_start = base + (nr_of_items * item_size);
     byte* curr = base + item_size;
-    int found_bigger = 0;
     int more_than_one_pivot_item = 0;
     size_t pivot_index =
         ((size_t)erts_sched_local_random_hash_64_to_32_shift((Uint64)extra_seed +
@@ -5267,26 +5249,16 @@ erts_qsort_partion_array(byte *base,
             /* Move to last part */
             second_part_start -= item_size;
             erts_qsort_swap(item_size, curr, second_part_start);
-            found_bigger = 1;
         }
     }
     if (!more_than_one_pivot_item) {
         /* Fast path successful (we don't need to use the slow path) */
-        if (!found_bigger) {
-            /* Move the pivot into the second part */
-            second_part_start -= item_size;
-            erts_qsort_swap(item_size, base, second_part_start);
-        }
-        {
-            erts_qsort_partion_array_result res;
-            res.pivot_part_start = second_part_start;
-            if (!found_bigger) {
-                res.pivot_part_end = second_part_start + item_size;
-            } else {
-                res.pivot_part_end = second_part_start;
-            }
-            return res;
-        }
+        /* Move the pivot before the second part (if any) */
+        erts_qsort_partion_array_result res;
+        res.pivot_part_start = second_part_start - item_size;
+        res.pivot_part_end = second_part_start;
+        erts_qsort_swap(item_size, base, res.pivot_part_start);
+        return res;
     } else {
         /*
            We have more than one item equal to the pivot item and need
@@ -5297,9 +5269,8 @@ erts_qsort_partion_array(byte *base,
         byte * pivot_part_start = curr - item_size;
         byte * pivot_part_end = curr + item_size;
         byte * last_part_start = second_part_start;
-        if (base != pivot_part_start) {
-            erts_qsort_swap(item_size, base, pivot_part_start);
-        }
+
+	erts_qsort_swap(item_size, base, pivot_part_start);
 
         while (pivot_part_end != last_part_start) {
             int compare_res =

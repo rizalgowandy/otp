@@ -24,7 +24,6 @@
 
 -export([start/0, stop/0, info_lib/0, info_fips/0, supports/0, enable_fips_mode/1,
          version/0, bytes_to_integer/1]).
--export([equal_const_time/2]).
 -export([cipher_info/1, hash_info/1]).
 -export([hash/2, hash_init/1, hash_update/2, hash_final/1]).
 -export([sign/4, sign/5, verify/5, verify/6]).
@@ -96,6 +95,8 @@
          crypto_dyn_iv_update/3,
          crypto_final/1,
          crypto_get_data/1,
+
+         hash_equals/2,
 
          supports/1,
          mac/3, mac/4, macN/4, macN/5,
@@ -519,35 +520,6 @@ enable_fips_mode_nif(_) -> ?nif_stub.
 
 %%%================================================================
 %%%
-%%% Compare in constant time
-%%%
-%%%================================================================
-
-%%% Candidate for a NIF
-
-equal_const_time(X1, X2) ->
-    equal_const_time(X1, X2, true).
-
-
-equal_const_time(<<B1,R1/binary>>, <<B2,R2/binary>>, Truth) ->
-    equal_const_time(R1, R2, Truth and (B1 == B2));
-equal_const_time(<<_,R1/binary>>, <<>>, Truth) ->
-    equal_const_time(R1, <<>>, Truth and false);
-equal_const_time(<<>>, <<>>, Truth) ->
-    Truth;
-
-equal_const_time([H1|T1], [H2|T2], Truth) ->
-    equal_const_time(T1, T2, Truth and (H1 == H2));
-equal_const_time([_|T1], [], Truth) ->
-    equal_const_time(T1, [], Truth and false);
-equal_const_time([], [], Truth) ->
-    Truth;
-
-equal_const_time(_, _, _) ->
-    false.
-
-%%%================================================================
-%%%
 %%% Hashing
 %%%
 %%%================================================================
@@ -628,7 +600,6 @@ mac(poly1305, Key, Data) -> mac(poly1305, undefined, Key, Data).
 mac(Type, SubType, Key0, Data) ->
     Key = iolist_to_binary(Key0),
     mac_nif(Type, alias(SubType,Key), Key, Data).
-
 
 
 -spec macN(Type :: poly1305, Key, Data, MacLength) -> Mac | descriptive_error()
@@ -2303,6 +2274,15 @@ exor(Data1, Data2, _Size, MaxByts, Acc) ->
 
 do_exor(_A, _B) -> ?nif_stub.
 
+-spec hash_equals(BinA, BinB) -> Result
+          when BinA :: binary(),
+               BinB :: binary(),
+               Result :: boolean().
+hash_equals(A, B) ->
+  hash_equals_nif(A, B).
+
+hash_equals_nif(_A, _B) -> ?nif_stub.
+
 hash_algorithms() -> ?nif_stub.
 pubkey_algorithms() -> ?nif_stub.
 cipher_algorithms() -> ?nif_stub.
@@ -2362,6 +2342,9 @@ format_pkey(rsa, Key) ->
     map_ensure_int_as_bin(Key);
 format_pkey(ecdsa, [Key, Curve]) ->
     {nif_curve_params(Curve), ensure_int_as_bin(Key)};
+format_pkey(eddsa, [PubKey, Curve]) when  Curve == ed25519;
+                                          Curve == ed448 ->
+    [ensure_int_as_bin(PubKey), Curve];
 format_pkey(dss, Key) ->
     map_ensure_int_as_bin(Key);
 format_pkey(_, Key) ->

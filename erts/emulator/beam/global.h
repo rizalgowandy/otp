@@ -975,7 +975,11 @@ Eterm erl_is_function(Process* p, Eterm arg1, Eterm arg2);
 
 /* beam_bif_load.c */
 Eterm erts_check_process_code(Process *c_p, Eterm module, int *redsp, int fcalls);
-Eterm erts_proc_copy_literal_area(Process *c_p, int *redsp, int fcalls, int gc_allowed);
+#define ERTS_CLA_SCAN_WORDS_PER_RED 512
+
+int erts_check_copy_literals_gc_need(Process *c_p, int *redsp,
+                                     char *literals, Uint lit_bsize);
+Eterm erts_copy_literals_gc(Process *c_p, int *redsp, int fcalls);
 
 Uint32 erts_block_release_literal_area(void);
 void erts_unblock_release_literal_area(Uint32);
@@ -1382,10 +1386,11 @@ Eterm erts_ycf_trap_driver(Process* p,
 /* A quick sort function that is compatible with the qsort function
    declared in stdlib.h. We need our own so that we can yield inside
    the function */
+typedef int (*erts_void_ptr_cmp_t)(const void *, const void *);
 void erts_qsort(void *base,
                 size_t nr_of_items,
                 size_t item_size,
-                int (*compare)(const void *, const void *));
+                erts_void_ptr_cmp_t compare);
 /* YCF generated functions for yielding of erts_qsort
    See: $ERL_TOP/erts/emulator/internal_doc/AutomaticYieldingOfCCode.md 
 
@@ -1410,7 +1415,7 @@ void erts_qsort_ycf_gen_yielding(long* ycf_nr_of_reductions_param,
                                  void* ycf_stack_alloc_data,void *base,
                                  size_t nr_of_items,
                                  size_t item_size,
-                                 int (*compare)(const void *, const void *));
+                                 erts_void_ptr_cmp_t compare);
 #if defined(DEBUG)
 /*
  * ycf_debug_get_stack_start is used in YCF's debug mode (see
@@ -1470,8 +1475,8 @@ void erts_init_external(void);
 void erts_init_map(void);
 
 /* beam_debug.c */
-UWord erts_check_stack_recursion_downwards(char *start_c);
-UWord erts_check_stack_recursion_upwards(char *start_c);
+UWord erts_check_stack_recursion_downwards(char *start_c, char *prev_c);
+UWord erts_check_stack_recursion_upwards(char *start_c, char *prev_c);
 int erts_is_above_stack_limit(char *ptr);
 
 /* erl_unicode.c */

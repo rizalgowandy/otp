@@ -148,6 +148,8 @@ erts_prepare_loading(Binary* magic, Process *c_p, Eterm group_leader,
         BeamLoadError0(stp, "corrupt line table");
     case BEAMFILE_READ_CORRUPT_LITERAL_TABLE:
         BeamLoadError0(stp, "corrupt literal table");
+    case BEAMFILE_READ_CORRUPT_LOCALS_TABLE:
+        BeamLoadError0(stp, "corrupt locals table");
     case BEAMFILE_READ_SUCCESS:
         break;
     }
@@ -369,9 +371,11 @@ static int load_code(LoaderState* stp)
 
     int num_specific;
 
-    beam_load_prepare_emit(stp);
-
     op_reader = beamfile_get_code(&stp->beam, &stp->op_allocator);
+
+    if (!beam_load_prepare_emit(stp)) {
+        goto load_error;
+    }
 
     for (;;) {
     get_next_instr:

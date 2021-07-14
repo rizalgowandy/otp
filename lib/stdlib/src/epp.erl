@@ -1088,17 +1088,17 @@ scan_include_lib1(Toks, Inc, From, St) ->
 %%  Report a badly formed if[n]def test and then treat as undefined macro.
 
 scan_ifdef([{'(',_Alp},{atom,_Am,M},{')',_Arp},{dot,_Ad}], _IfD, From, St) ->
-    case St#epp.macs of
-	#{M:=_Def} ->
+    case is_macro_defined(M, St) of
+        true ->
 	    scan_toks(From, St#epp{istk=[ifdef|St#epp.istk]});
-	_ ->
+        false ->
 	    skip_toks(From, St, [ifdef])
     end;
 scan_ifdef([{'(',_Alp},{var,_Am,M},{')',_Arp},{dot,_Ad}], _IfD, From, St) ->
-    case St#epp.macs of
-	#{M:=_Def} ->
+    case is_macro_defined(M, St) of
+        true ->
 	    scan_toks(From, St#epp{istk=[ifdef|St#epp.istk]});
-	_ ->
+        false ->
 	    skip_toks(From, St, [ifdef])
     end;
 scan_ifdef(Toks, IfDef, From, St) ->
@@ -1107,23 +1107,30 @@ scan_ifdef(Toks, IfDef, From, St) ->
     wait_req_skip(St, [ifdef]).
 
 scan_ifndef([{'(',_Alp},{atom,_Am,M},{')',_Arp},{dot,_Ad}], _IfnD, From, St) ->
-    case St#epp.macs of
-	#{M:=_Def} ->
+    case is_macro_defined(M, St) of
+        true ->
 	    skip_toks(From, St, [ifndef]);
-	_ ->
+        false ->
 	    scan_toks(From, St#epp{istk=[ifndef|St#epp.istk]})
     end;
 scan_ifndef([{'(',_Alp},{var,_Am,M},{')',_Arp},{dot,_Ad}], _IfnD, From, St) ->
-    case St#epp.macs of
-	#{M:=_Def} ->
+    case is_macro_defined(M, St) of
+        true ->
 	    skip_toks(From, St, [ifndef]);
-	_ ->
+        false ->
 	    scan_toks(From, St#epp{istk=[ifndef|St#epp.istk]})
     end;
 scan_ifndef(Toks, IfnDef, From, St) ->
     T = find_mismatch(['(',var_or_atom,')',dot], Toks, IfnDef),
     epp_reply(From, {error,{loc(T),epp,{bad,ifndef}}}),
     wait_req_skip(St, [ifndef]).
+
+is_macro_defined(Name, #epp{macs=Macs}) ->
+    case Macs of
+        #{Name := undefined} -> false;
+        #{Name := _Def} -> true;
+        #{} -> false
+    end.
 
 %% scan_else(Tokens, ElseToken, From, EppState)
 %%  If we are in an if body then convert to else and skip, if we are in an
@@ -1218,7 +1225,7 @@ rewrite_expr({call,_,{atom,_,defined},[N0]}, #epp{macs=Macs}) ->
 	    {atom,_,N1} -> N1;
 	    _ -> throw({bad,'if'})
 	end,
-    {atom,0,maps:is_key(N, Macs)};
+    {atom,erl_anno:new(0),maps:is_key(N, Macs)};
 rewrite_expr({call,_,{atom,_,Name},As0}, none) ->
     As = rewrite_expr(As0, none),
     Arity = length(As),
@@ -1241,9 +1248,9 @@ rewrite_expr(Other, _) ->
     Other.
 
 to_conses([H|T]) ->
-    {cons,0,H,to_conses(T)};
+    {cons,erl_anno:new(0),H,to_conses(T)};
 to_conses([]) ->
-    {nil,0}.
+    {nil,erl_anno:new(0)}.
 
 %% scan_elif(Tokens, EndifToken, From, EppState)
 %%  Handle the conditional parsing of a file.

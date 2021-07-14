@@ -61,15 +61,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#if TIME_WITH_SYS_TIME
-# include <sys/time.h>
-# include <time.h>
-#else
-# if HAVE_SYS_TIME_H
+#include <time.h>
+#if HAVE_SYS_TIME_H
 #  include <sys/time.h>
-# else
-#  include <time.h>
-# endif
 #endif
 
 #endif
@@ -1486,7 +1480,7 @@ static int exec_erlang(ei_cnode *ec,
   sprintf(&argbuf[len],
 	  "-s erl_reply reply %s %d %d ",
 	  inet_ntoa(myaddr),port,(int)getpid());
-#ifdef DEBUG
+#ifdef HARD_DEBUG
   fprintf(stderr,"erl_call: debug %s\n",&argbuf[len]);
 #endif
   len = strlen(argbuf);
@@ -1587,7 +1581,7 @@ static int wait_for_erlang(int sockd, int magic, struct timeval *timeout)
     stop_time.tv_usec -= 1000000;
   }
 
-#ifdef DEBUG
+#ifdef HARD_DEBUG
   fprintf(stderr,"erl_call: debug time is %ld.%06ld, "
 	  "will timeout at %ld.%06ld\n",
 	  now.tv_sec,now.tv_usec,stop_time.tv_sec,stop_time.tv_usec);
@@ -1607,7 +1601,7 @@ static int wait_for_erlang(int sockd, int magic, struct timeval *timeout)
     }
     if (to.tv_sec < 0) return ERL_TIMEOUT;
 
-#ifdef DEBUG
+#ifdef HARD_DEBUG
     fprintf(stderr,"erl_call: debug remaining to timeout: %ld.%06ld\n",
 	    to.tv_sec,to.tv_usec);
 #endif
@@ -1617,7 +1611,7 @@ static int wait_for_erlang(int sockd, int magic, struct timeval *timeout)
       break;
 
     case 0: /* timeout */
-#ifdef DEBUG
+#ifdef HARD_DEBUG
       gettimeofday(&now,NULL);
       fprintf(stderr,"erl_call: debug timed out at %ld.%06ld\n",
 	      now.tv_sec,now.tv_usec);
@@ -1626,7 +1620,7 @@ static int wait_for_erlang(int sockd, int magic, struct timeval *timeout)
       break;
 
     default: /* ready descriptors */
-#ifdef DEBUG
+#ifdef HARD_DEBUG
       gettimeofday(&now,NULL);
       fprintf(stderr,"erl_call: debug got select at %ld.%06ld\n",
 	      now.tv_sec,now.tv_usec);
@@ -1643,7 +1637,7 @@ static int wait_for_erlang(int sockd, int magic, struct timeval *timeout)
 	if ((n=read(fd,buf,16)) >= 0) buf[n]=0x0;
 	close(fd);
 #endif
-#ifdef DEBUG
+#ifdef HARD_DEBUG
 	fprintf(stderr,"erl_call: debug got %d, expected %d\n",
 		atoi(buf),magic);
 #endif

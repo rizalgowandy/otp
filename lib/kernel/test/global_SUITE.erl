@@ -19,6 +19,8 @@
 %%
 -module(global_SUITE).
 
+-compile(r23). % many_nodes()
+
 -export([all/0, suite/0, groups/0, 
 	 init_per_suite/1, end_per_suite/1,
          init_per_group/2,end_per_group/2,
@@ -42,8 +44,8 @@
          lost_unregister/1,
 	 mass_death/1,
 	 garbage_messages/1,
-
-         ring_line/1
+         ring_line/1,
+         flaw1/1
         ]).
 
 %% Not used
@@ -138,7 +140,7 @@ all() ->
 	     simple_resolve2, simple_resolve3, leftover_name,
 	     re_register_name, name_exit, external_nodes, many_nodes,
 	     sync_0, global_groups_change, register_1, both_known_1,
-	     lost_unregister, mass_death, garbage_messages
+	     lost_unregister, mass_death, garbage_messages, flaw1
             ]
     end.
 
@@ -485,6 +487,9 @@ write_high_level_trace(Nodes, Config) ->
                Node <- Nodes],
     Dir = proplists:get_value(priv_dir, Config),
     DataFile = filename:join([Dir, lists:concat(["global_", ?testcase])]),
+    io:format("\n\nAnalyze high level trace like this:\n"),
+    io:format("global_trace:dd(~p, [{show_state, 0, 10}]). % 10 seconds\n",
+             [DataFile]),
     file:write_file(DataFile, term_to_binary({high_level_trace, When, Data})).
 
 lock_global2(Id, Parent) ->
@@ -2898,11 +2903,11 @@ many_nodes(Config) when is_list(Config) ->
                                 Osname =:= openbsd; 
                                 Osname =:= darwin ->
                 N_nodes = quite_a_few_nodes(32),
-                {node_rel(1, N_nodes, this), N_nodes};
+                {node_rel(1, N_nodes), N_nodes};
             {unix, _} ->
-                {node_rel(1, 32, this), 32};
+                {node_rel(1, 32), 32};
             _ -> 
-                {node_rel(1, 32, this), 32}
+                {node_rel(1, 32), 32}
         end,
     Cps = [begin {ok, Cp} = start_node_rel(Name, Rel, Config), Cp end ||
 	      {Name,Rel} <- Rels],
@@ -2950,8 +2955,19 @@ many_nodes(Config) when is_list(Config) ->
     io:format("~s~n", [Return]),
     {comment, Return}.
 
-node_rel(From, To, Rel) ->
-    [{lists:concat([cp, N]), Rel} || N <- lists:seq(From, To)].
+node_rel(From, To) ->
+    NodeNumbers = lists:seq(From, To),
+    Release = erlang:system_info(otp_release),
+    LastRelease = integer_to_list(list_to_integer(Release) - 1) ++ "_latest",
+    Last = case test_server:is_release_available(LastRelease) of
+               true -> list_to_atom(LastRelease);
+               false -> this
+           end,
+    [{lists:concat([cp, N]),
+      case N rem 2 of
+          0 -> this;
+          1 -> Last
+      end} || N <- NodeNumbers].
 
 isolated_node(File, GoFile, Nodes, Config) ->
     Ns = lists:sort(Nodes),
@@ -4213,7 +4229,7 @@ init_condition(Config) ->
     io:format("globally registered names: ~p~n", [global:registered_names()]),
     io:format("nodes: ~p~n", [nodes()]),
     io:format("known: ~p~n", [get_known(node()) -- [node()]]),
-    io:format("Info ~p~n", [setelement(11, global:info(), trace)]),
+    io:format("Info ~p~n", [setelement(10, global:info(), trace)]),
     _ = [io:format("~s: ~p~n", [TN, ets:tab2list(T)]) ||
             {TN, T} <- [{"Global Names     (ETS)", global_names},
                         {"Global Names Ext (ETS)", global_names_ext},
@@ -4260,6 +4276,84 @@ garbage_messages(Config) when is_list(Config) ->
     true = unlink(Pid),
     write_high_level_trace(Config),
     stop_node(Slave),
+    init_condition(Config),
+    ok.
+
+%% This is scenario outlined in
+%% https://erlang.org/pipermail/erlang-questions/2020-October/100034.html.
+%% It illustrates that the algorithm of Global is flawed.
+flaw1(Config) ->
+    Timeout = 360,
+    ct:timetrap({seconds,Timeout}),
+    init_high_level_trace(Timeout),
+    init_condition(Config),
+    OrigNames = global:registered_names(),
+
+    [A, B, C, D] = OtherNodes = start_nodes([a, b, c, d], peer, Config),
+    Nodes = lists:sort([node() | OtherNodes]),
+    wait_for_ready_net(Config),
+
+    F1 =
+        fun(S0) ->
+                ct:sleep(100),
+                Str = "************",
+                S = Str ++ "  " ++ lists:flatten(S0) ++ "  " ++ Str,
+                io:format("~s\n", [S]),
+                [begin
+                     RNs = rpc:call(N, global, registered_names, []),
+                     W = rpc:call(N, global, whereis_name, [x]),
+                     io:format("   === ~w ===\n", [N]),
+                     io:format("       registered names: ~p", [RNs]),
+                     io:format("       where is x:       ~p", [W])
+                 end || N <- OtherNodes]
+        end,
+    F1("start"),
+
+    true = rpc:call(A, erlang, disconnect_node, [C]),
+    F1("after disconnecting c from a"),
+
+    Pid = self(),
+    yes = rpc:call(A, global, register_name, [x, Pid]),
+    F1(io_lib:format("after registering x as ~p on a", [Pid])),
+
+    true = rpc:call(B, erlang, disconnect_node, [D]),
+    F1("after disconnecting d from b"),
+
+    Pid2 = whereis(global_name_server),
+    yes = rpc:call(B, global, re_register_name, [x, Pid2]),
+    F1(io_lib:format("after re_register_name x as ~p on b", [Pid2])),
+
+    pong = rpc:call(A, net_adm, ping, [C]),
+    F1("finished after ping c from a"),
+
+    pong = rpc:call(B, net_adm, ping, [D]),
+
+    timer:sleep(1000),
+
+    %% "You have all 4 nodes connected again, but A, B & C believe the
+    %% name belongs to Y, while D believes it belongs to X."
+    Pid2 = rpc:call(A, global, whereis_name, [x]),
+    Pid2 = rpc:call(B, global, whereis_name, [x]),
+    Pid2 = rpc:call(C, global, whereis_name, [x]),
+    Pid  = rpc:call(D, global, whereis_name, [x]),
+
+    lists:foreach(fun(N) ->
+			  rpc:call(N, ?MODULE, stop_tracer, [])
+		  end, Nodes),
+    _ = rpc:call(A, global, unregister_name, [x]),
+
+    F1("after unregistering x on node a"),
+
+    %% _ = rpc:call(B, global, unregister_name, [y]),
+    %% F1("after unregistering y on node b"),
+
+    _ = rpc:call(C, global, unregister_name, [x]),
+    F1("after unregistering x on node c"),
+
+    ct:sleep(100),
+    OrigNames = global:registered_names(),
+    write_high_level_trace(Config),
+    stop_nodes(OtherNodes),
     init_condition(Config),
     ok.
 

@@ -28,6 +28,8 @@
 -export([is_guard_expr/1]).
 -export([bool_option/4,value_option/3,value_option/7]).
 
+-export([check_format_string/1]).
+
 -export_type([error_info/0, error_description/0]).
 
 -import(lists, [all/2,any/2,
@@ -91,6 +93,16 @@ value_option(Flag, Default, On, OnVal, Off, OffVal, Opts) ->
 
 -record(typeinfo, {attr, anno}).
 
+-type type_id() :: {'export', []}
+                 | {'record', atom()}
+                 | {'spec', mfa()}
+                 | {'type', ta()}.
+
+-record(used_type, {anno :: erl_anno:anno(),
+                    at = {export, []} :: type_id()}).
+
+-type used_type() :: #used_type{}.
+
 %% Usage of records, functions, and imports. The variable table, which
 %% is passed on as an argument, holds the usage of variables.
 -record(usage, {
@@ -99,7 +111,7 @@ value_option(Flag, Default, On, OnVal, Off, OffVal, Opts) ->
           used_records = gb_sets:new()          %Used record definitions
               :: gb_sets:set(atom()),
           used_types = maps:new()               %Used type definitions
-              :: #{ta() := anno()}
+              :: #{ta() := [used_type()]}
          }).
 
 
@@ -128,6 +140,7 @@ value_option(Flag, Default, On, OnVal, Off, OffVal, Opts) ->
                not_removed=gb_sets:empty()      %Not considered removed
                    :: gb_sets:set(module_or_mfa()),
                func=[],                         %Current function
+               type_id=[],                      %Current type id
                warn_format=0,                   %Warn format calls
 	       enabled_warnings=[],		%All enabled warnings (ordset).
                nowarn_bif_clash=[],             %All no warn bif clashes (ordset).
@@ -1084,11 +1097,7 @@ behaviour_add_conflict([], _, _, _, St) -> St.
 %% check_deprecated(Forms, State0) -> State
 
 check_deprecated(Forms, St0) ->
-    %% Get the correct list of exported functions.
-    Exports = case member(export_all, St0#lint.compile) of
-		  true -> St0#lint.defined;
-		  false -> St0#lint.exports
-	      end,
+    Exports = exports(St0),
     X = ignore_predefined_funcs(gb_sets:to_list(Exports)),
     #lint{module = Mod} = St0,
     Bad = [{E,Anno} || {attribute, Anno, deprecated, Depr} <- Forms,
@@ -1142,11 +1151,7 @@ deprecated_desc(_) -> false.
 %% check_removed(Forms, State0) -> State
 
 check_removed(Forms, St0) ->
-    %% Get the correct list of exported functions.
-    Exports = case member(export_all, St0#lint.compile) of
-                  true -> St0#lint.defined;
-                  false -> St0#lint.exports
-              end,
+    Exports = exports(St0),
     X = ignore_predefined_funcs(gb_sets:to_list(Exports)),
     #lint{module = Mod} = St0,
     Bad = [{E,Anno} || {attribute, Anno, removed, Removed} <- Forms,
@@ -1294,8 +1299,10 @@ check_undefined_types(#lint{usage=Usage,types=Def}=St0) ->
 		TA <- UTAs,
 		not is_map_key(TA, Def),
 		not is_default_type(TA)],
-    foldl(fun ({TA,Anno}, St) ->
-		  add_error(Anno, {undefined_type,TA}, St)
+    foldl(fun ({TA,UsedTypeList}, St) ->
+                  foldl( fun(#used_type{anno = Anno}, St1) ->
+                                 add_error(Anno, {undefined_type,TA}, St1)
+                         end, St, UsedTypeList)
 	  end, St0, Undef).
 
 %% check_bif_clashes(Forms, State0) -> State
@@ -1429,21 +1436,21 @@ export(Anno, Es, #lint{exports = Es0, called = Called} = St0) ->
 -spec export_type(anno(), [ta()], lint_state()) -> lint_state().
 %%  Mark types as exported; also mark them as used from the export line.
 
-export_type(Anno, ETs, #lint{usage = Usage, exp_types = ETs0} = St0) ->
-    UTs0 = Usage#usage.used_types,
-    try foldl(fun ({T,A}=TA, {E,U,St2}) when is_atom(T), is_integer(A) ->
+export_type(Anno, ETs, #lint{exp_types = ETs0} = St0) ->
+    try foldl(fun ({T,A}=TA, {E,St2}) when is_atom(T), is_integer(A) ->
 		      St = case gb_sets:is_element(TA, E) of
 			       true ->
 				   Warn = {duplicated_export_type,TA},
 				   add_warning(Anno, Warn, St2);
 			       false ->
-				   St2
+                                   St3 = St2#lint{type_id = {export, []}},
+                                   used_type(TA, Anno, St3)
 			   end,
-		      {gb_sets:add_element(TA, E), maps:put(TA, Anno, U), St}
+		      {gb_sets:add_element(TA, E), St}
 	      end,
-	      {ETs0,UTs0,St0}, ETs) of
-	{ETs1,UTs1,St1} ->
-	    St1#lint{usage = Usage#usage{used_types = UTs1}, exp_types = ETs1}
+	      {ETs0,St0}, ETs) of
+	{ETs1,St1} ->
+	    St1#lint{exp_types = ETs1}
     catch
 	error:_ ->
 	    add_error(Anno, {bad_export_type, ETs}, St0)
@@ -2679,7 +2686,8 @@ record_def(Anno, Name, Fs0, St0) ->
             St2 = St1#lint{records=maps:put(Name, {Anno,Fs1},
                                             St1#lint.records)},
             Types = [T || {typed_record_field, _, T} <- Fs0],
-            check_type({type, nowarn(), product, Types}, St2)
+            St3 = St2#lint{type_id = {record, Name}},
+            check_type({type, nowarn(), product, Types}, St3)
     end.
 
 %% def_fields([RecDef], RecordName, State) -> {[DefField],State}.
@@ -2899,7 +2907,8 @@ type_def(Attr, Anno, TypeName, ProtoType, Args, St0) ->
         fun(St) ->
                 NewDefs = maps:put(TypePair, Info, TypeDefs),
                 CheckType = {type, nowarn(), product, [ProtoType|Args]},
-                check_type(CheckType, St#lint{types=NewDefs})
+                St1 = St#lint{types=NewDefs, type_id={type, TypePair}},
+                check_type(CheckType, St1)
         end,
     case is_default_type(TypePair) of
         true ->
@@ -3093,9 +3102,11 @@ check_record_types([], _Name, _DefFields, SeenVars, St, _SeenFields) ->
     {SeenVars, St}.
 
 used_type(TypePair, Anno, #lint{usage = Usage, file = File} = St) ->
-    OldUsed = Usage#usage.used_types,
-    UsedTypes = maps:put(TypePair, erl_anno:set_file(File, Anno), OldUsed),
-    St#lint{usage=Usage#usage{used_types=UsedTypes}}.
+    Used = Usage#usage.used_types,
+    UsedType = #used_type{anno = erl_anno:set_file(File, Anno),
+                          at = St#lint.type_id},
+    NewUsed = maps_prepend(TypePair, UsedType, Used),
+    St#lint{usage=Usage#usage{used_types=NewUsed}}.
 
 is_default_type({Name, NumberOfTypeVariables}) ->
     erl_internal:is_type(Name, NumberOfTypeVariables).
@@ -3122,12 +3133,12 @@ spec_decl(Anno, MFA0, TypeSpecs, St00 = #lint{specs = Specs, module = Mod}) ->
     case is_map_key(MFA, Specs) of
 	true -> add_error(Anno, {redefine_spec, MFA0}, St1);
 	false ->
-            case MFA of
-                {Mod, _, _} ->
-                    check_specs(TypeSpecs, spec_wrong_arity, Arity, St1);
-                _ ->
-                    add_error(Anno, {bad_module, MFA}, St1)
-            end
+            St2 = case MFA of
+                      {Mod, _, _} -> St1;
+                      _ -> add_error(Anno, {bad_module, MFA}, St1)
+                  end,
+            St3 = St2#lint{type_id = {spec, MFA}},
+            check_specs(TypeSpecs, spec_wrong_arity, Arity, St3)
     end.
 
 %% callback_decl(Anno, Fun, Types, State) -> State.
@@ -3143,8 +3154,9 @@ callback_decl(Anno, MFA0, TypeSpecs,
             St1 = St0#lint{callbacks = maps:put(MFA, Anno, Callbacks)},
             case is_map_key(MFA, Callbacks) of
                 true -> add_error(Anno, {redefine_callback, MFA0}, St1);
-                false -> check_specs(TypeSpecs, callback_wrong_arity,
-                                     Arity, St1)
+                false ->
+                    St2 = St1#lint{type_id = {spec, MFA}},
+                    check_specs(TypeSpecs, callback_wrong_arity, Arity, St2)
             end
     end.
 
@@ -3250,7 +3262,7 @@ add_missing_spec_warnings(Forms, St0, Type) ->
 		[{FA,Anno} || {function,Anno,F,A,_} <- Forms,
 			   not lists:member(FA = {F,A}, Specs)];
 	    exported ->
-		Exps0 = gb_sets:to_list(St0#lint.exports) -- pseudolocals(),
+                Exps0 = gb_sets:to_list(exports(St0)) -- pseudolocals(),
                 Exps = Exps0 -- Specs,
 		[{FA,Anno} || {function,Anno,F,A,_} <- Forms,
 			   member(FA = {F,A}, Exps)]
@@ -3265,11 +3277,10 @@ check_unused_types(Forms, St) ->
         false -> St
     end.
 
-check_unused_types_1(Forms, #lint{usage=Usage, types=Ts, exp_types=ExpTs}=St) ->
+check_unused_types_1(Forms, #lint{types=Ts}=St) ->
     case [File || {attribute,_A,file,{File,_Anno}} <- Forms] of
 	[FirstFile|_] ->
-	    D = Usage#usage.used_types,
-	    L = gb_sets:to_list(ExpTs) ++ maps:keys(D),
+            L = reached_types(St),
 	    UsedTypes = gb_sets:from_list(L),
 	    FoldFun =
                 fun({{record, _}=_Type, 0}, _, AccSt) ->
@@ -3292,6 +3303,19 @@ check_unused_types_1(Forms, #lint{usage=Usage, types=Ts, exp_types=ExpTs}=St) ->
 	[] ->
 	    St
     end.
+
+reached_types(#lint{usage = Usage}) ->
+    Es = [{From, {type, To}} ||
+             {To, UsedTs} <- maps:to_list(Usage#usage.used_types),
+             #used_type{at = From} <- UsedTs],
+    Initial = initially_reached_types(Es),
+    G = sofs:family_to_digraph(sofs:rel2fam(sofs:relation(Es))),
+    R = digraph_utils:reachable(Initial, G),
+    true = digraph:delete(G),
+    [T || {type, T} <- R].
+
+initially_reached_types(Es) ->
+    [FromTypeId || {{T, _}=FromTypeId, _} <- Es, T =/= type].
 
 check_local_opaque_types(St) ->
     #lint{types=Ts, exp_types=ExpTs} = St,
@@ -4112,7 +4136,7 @@ is_format_function(M, F) when is_atom(M), is_atom(F) -> false.
 %% check_format_1([Arg]) -> ok | {warn,Level,Format,[Arg]}.
 
 check_format_1([Fmt]) ->
-    check_format_1([Fmt,{nil,0}]);
+    check_format_1([Fmt,no_argument_list]);
 check_format_1([Fmt,As]) ->
     check_format_2(Fmt, canonicalize_string(As));
 check_format_1([_Dev,Fmt,As]) ->
@@ -4125,8 +4149,6 @@ canonicalize_string({string,Anno,Cs}) ->
 canonicalize_string(Term) ->
     Term.
 
-%% check_format_2([Arg]) -> ok | {warn,Level,Format,[Arg]}.
-
 check_format_2(Fmt, As) ->
     case Fmt of
         {string,A,S} ->
@@ -4138,6 +4160,8 @@ check_format_2(Fmt, As) ->
             {warn,2,Anno,"format string not a textual constant",[]}
     end.
 
+check_format_2a(Fmt, FmtAnno, no_argument_list=As) ->
+    check_format_3(Fmt, FmtAnno, As);
 check_format_2a(Fmt, FmtAnno, As) ->
     case args_list(As) of
         true ->
@@ -4150,18 +4174,43 @@ check_format_2a(Fmt, FmtAnno, As) ->
             {warn,2,Anno,"format arguments perhaps not a list",[]}
     end.
 
-%% check_format_3(FormatString, [Arg]) -> ok | {warn,Level,Format,[Arg]}.
-
 check_format_3(Fmt, FmtAnno, As) ->
     case check_format_string(Fmt) of
         {ok,Need} ->
-            case args_length(As) of
-                Len when length(Need) =:= Len -> ok;
-                _Len -> {warn,1,element(2, As),"wrong number of arguments in format call",[]}
-            end;
+            check_format_4(Need, FmtAnno, As);
         {error,S} ->
             {warn,1,FmtAnno,"format string invalid (~ts)",[S]}
     end.
+
+check_format_4([], _FmtAnno, no_argument_list) ->
+    ok;
+check_format_4(Need, FmtAnno, no_argument_list) ->
+    Msg = "the format string requires an argument list with ~s, but no argument list is given",
+    {warn,1,FmtAnno,Msg,[arguments(length(Need))]};
+check_format_4(Need, _FmtAnno, As) ->
+    Anno = element(2, As),
+    Prefix = "the format string requires an argument list with ~s, but the argument list ",
+    case {args_length(As),length(Need)} of
+        {Same,Same} ->
+            ok;
+        {Actual,0} ->
+            Msg = "the format string requires an empty argument list, but the argument list contains ~s",
+            {warn,1,Anno,Msg,[arguments(Actual)]};
+        {0,Needed} ->
+            Msg = Prefix ++ "is empty",
+            {warn,1,Anno,Msg,[arguments(Needed)]};
+        {Actual,Needed} when Actual < Needed ->
+            Msg = Prefix ++ "contains only ~s",
+            {warn,1,Anno,Msg,[arguments(Needed),arguments(Actual)]};
+        {Actual,Needed} when Actual > Needed ->
+            Msg = Prefix ++ "contains ~s",
+            {warn,1,Anno,Msg,[arguments(Needed),arguments(Actual)]}
+    end.
+
+arguments(1) ->
+    "1 argument";
+arguments(N) ->
+    [integer_to_list(N), " arguments"].
 
 args_list({cons,_A,_H,T}) -> args_list(T);
 %% Strange case: user has written something like [a | "bcd"]; pretend
@@ -4176,6 +4225,10 @@ args_list(_Other) -> maybe.
 args_length({cons,_A,_H,T}) -> 1 + args_length(T);
 args_length({nil,_A}) -> 0.
 
+check_format_string(Fmt) when is_atom(Fmt) ->
+    check_format_string(atom_to_list(Fmt));
+check_format_string(Fmt) when is_binary(Fmt) ->
+    check_format_string(binary_to_list(Fmt));
 check_format_string(Fmt) ->
     extract_sequences(Fmt, []).
 
@@ -4199,6 +4252,7 @@ extract_sequence(1, [$*|Fmt], Need) ->
     extract_sequence(2, Fmt, [int|Need]);
 extract_sequence(1, Fmt, Need) ->
     extract_sequence(2, Fmt, Need);
+
 extract_sequence(2, [$.,C|Fmt], Need) when C >= $0, C =< $9 ->
     extract_sequence_digits(2, Fmt, Need);
 extract_sequence(2, [$.,$*|Fmt], Need) ->
@@ -4207,12 +4261,14 @@ extract_sequence(2, [$.|Fmt], Need) ->
     extract_sequence(3, Fmt, Need);
 extract_sequence(2, Fmt, Need) ->
     extract_sequence(4, Fmt, Need);
+
 extract_sequence(3, [$.,$*|Fmt], Need) ->
     extract_sequence(4, Fmt, [int|Need]);
 extract_sequence(3, [$.,_|Fmt], Need) ->
     extract_sequence(4, Fmt, Need);
 extract_sequence(3, Fmt, Need) ->
     extract_sequence(4, Fmt, Need);
+
 extract_sequence(4, [$t, $l | Fmt], Need) ->
     extract_sequence(4, [$l, $t | Fmt], Need);
 extract_sequence(4, [$t, $c | Fmt], Need) ->
@@ -4243,6 +4299,7 @@ extract_sequence(4, [$l, C | _Fmt], _Need) ->
     {error,"invalid control ~l" ++ [C]};
 extract_sequence(4, Fmt, Need) ->
     extract_sequence(5, Fmt, Need);
+
 extract_sequence(5, [C|Fmt], Need0) ->
     case control_type(C, Need0) of
         error -> {error,"invalid control ~" ++ [C]};
@@ -4265,10 +4322,10 @@ control_type($w, Need) -> [term|Need];
 control_type($p, Need) -> [term|Need];
 control_type($W, Need) -> [int,term|Need]; %% Note: reversed
 control_type($P, Need) -> [int,term|Need]; %% Note: reversed
-control_type($b, Need) -> [term|Need];
-control_type($B, Need) -> [term|Need];
-control_type($x, Need) -> [string,term|Need]; %% Note: reversed
-control_type($X, Need) -> [string,term|Need]; %% Note: reversed
+control_type($b, Need) -> [int|Need];
+control_type($B, Need) -> [int|Need];
+control_type($x, Need) -> [string,int|Need]; %% Note: reversed
+control_type($X, Need) -> [string,int|Need]; %% Note: reversed
 control_type($+, Need) -> [term|Need];
 control_type($#, Need) -> [term|Need];
 control_type($n, Need) -> Need;

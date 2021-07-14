@@ -49,6 +49,8 @@
          app/1,
          appup/0,
          appup/1,
+         bad_combo/1,
+         bad_key_length/1,
          bad_cipher_name/1,
          bad_generate_key_name/1,
          bad_hash_name/1,
@@ -101,8 +103,11 @@
          rand_threads/1,
          rand_uniform/0,
          rand_uniform/1,
+         hash_equals/0,
+         hash_equals/1,
          sign_verify/0,
          sign_verify/1,
+         ec_key_padding/1,
          use_all_ec_sign_verify/1,
          use_all_ecdh_generate_compute/1,
          use_all_eddh_generate_compute/1,
@@ -177,6 +182,7 @@ all() ->
      {group, fips},
      {group, non_fips},
      cipher_padding,
+     ec_key_padding,
      node_supports_cache,
      mod_pow,
      exor,
@@ -185,7 +191,8 @@ all() ->
      rand_plugin,
      rand_plugin_s,
      cipher_info,
-     hash_info
+     hash_info,
+     hash_equals
     ].
 
 -define(NEW_CIPHER_TYPE_SCHEMA,
@@ -401,6 +408,8 @@ groups() ->
      {no_rc2_cbc,           [], [no_support]},
      {no_rc4,               [], [no_support]},
      {api_errors,           [], [api_errors_ecdh,
+                                 bad_combo,
+                                 bad_key_length,
                                  bad_cipher_name,
                                  bad_generate_key_name,
                                  bad_hash_name,
@@ -948,6 +957,54 @@ cipher_padding_test({Cipher, Padding}) ->
     end.
 
 %%--------------------------------------------------------------------
+ec_key_padding(_Config) ->
+    lists:foreach(fun test_ec_key_padding/1,
+                  crypto:supports(curves) -- [ed25519, ed448, x25519, x448]
+                 ).
+
+test_ec_key_padding(CurveName) ->
+    ExpectedSize = expected_ec_size(CurveName),
+    repeat(100, % Enough to provoke an error in the 85 curves
+               % With for example 1000, the total test time would be too large
+           fun() ->
+                   case crypto:generate_key(ecdh, CurveName) of
+                       {_PubKey, PrivKey} when byte_size(PrivKey) == ExpectedSize ->
+                           %% ct:pal("~p:~p Test ~p, size ~p, expected size ~p",
+                           %%        [?MODULE,?LINE, CurveName, byte_size(PrivKey), ExpectedSize]),
+                           ok;
+                       {_PubKey, PrivKey} ->
+                           ct:fail("Bad ~p size: ~p expected: ~p", [CurveName, byte_size(PrivKey), ExpectedSize]);
+                       Other ->
+                           ct:pal("~p:~p ~p", [?MODULE,?LINE,Other]),
+                           ct:fail("Bad public_key:generate_key result for ~p", [CurveName])
+                   end
+           end).
+
+repeat(Times, F) when Times > 0 -> F(), repeat(Times-1, F);
+repeat(_, _) -> ok.
+
+expected_ec_size(CurveName) when is_atom(CurveName) ->
+    expected_ec_size(crypto_ec_curves:curve(CurveName));
+expected_ec_size({{prime_field,_}, _, _, Order, _}) -> byte_size(Order);
+expected_ec_size({{characteristic_two_field, _, _}, _, _, Order, _}) -> size(Order).
+
+%%--------------------------------------------------------------------
+no_aead() ->
+     [{doc, "Test disabled aead ciphers"}].
+no_aead(Config) when is_list(Config) ->
+    EncArg4 =
+        case lazy_eval(proplists:get_value(cipher, Config)) of
+            [{Type, Key, PlainText, Nonce, AAD, CipherText, CipherTag, TagLen, _Info} | _] ->
+                {AAD, PlainText, TagLen};
+            [{Type, Key, PlainText, Nonce, AAD, CipherText, CipherTag, _Info} | _] ->
+                {AAD, PlainText}
+        end,
+    EncryptArgs = [Type, Key, Nonce, EncArg4],
+    DecryptArgs = [Type, Key, Nonce, {AAD, CipherText, CipherTag}],
+    notsup(fun crypto:block_encrypt/4, EncryptArgs),
+    notsup(fun crypto:block_decrypt/4, DecryptArgs).
+
+%%--------------------------------------------------------------------
 no_aead_ng() ->
      [{doc, "Test disabled aead ciphers"}].
 no_aead_ng(Config) when is_list(Config) ->
@@ -1181,6 +1238,18 @@ exor() ->
 exor(Config) when is_list(Config) ->
     do_exor(<<1, 2, 3, 4, 5, 6, 7, 8, 9, 10>>),
     do_exor(term_to_binary(lists:seq(1, 1000000))).
+%%--------------------------------------------------------------------
+hash_equals() ->
+    [{doc, "Test the hash_equals function"}].
+hash_equals(Config) when is_list(Config) ->
+    try
+        true = crypto:hash_equals(<<>>, <<>>),
+        true = crypto:hash_equals(<<"abc">>, <<"abc">>),
+        false = crypto:hash_equals(<<"abc">>, <<"abe">>)
+    catch
+        error:{notsup,{"hash_equals.c",_Line},"Unsupported CRYPTO_memcmp"} ->
+            {skip, "No CRYPTO_memcmp"}
+    end.
 %%--------------------------------------------------------------------
 rand_uniform() ->
     [{doc, "rand_uniform and random_bytes testing"}].
@@ -4216,6 +4285,14 @@ api_errors_ecdh(Config) when is_list(Config) ->
                  end
          end)()
        ).
+
+bad_combo(_Config) ->
+    ?chk_api_name(crypto:crypto_dyn_iv_init(des_ede3_cbc, <<>>, []),
+                  error:_).
+
+bad_key_length(_Config) ->
+    ?chk_api_name(crypto:crypto_dyn_iv_init(des_ede3_cbc, <<1>>, true),
+                  error:{error,{"api_ng.c",_},"Can't initialize context, key_length"}).
 
 bad_cipher_name(_Config) ->
     ?chk_api_name(crypto:crypto_init(foobar, <<1:128>>, true),

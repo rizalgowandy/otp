@@ -124,6 +124,7 @@ atom bad_map_iterator
 atom bag
 atom band
 atom big
+atom bif_handle_signals_return
 atom bif_return_trap
 atom binary
 atom binary_copy_trap
@@ -300,6 +301,7 @@ atom free
 atom fullsweep_after
 atom functions
 atom function_clause
+atom garbage_collect
 atom garbage_collecting
 atom garbage_collection
 atom garbage_collection_info
@@ -351,6 +353,7 @@ atom infinity
 atom info
 atom info_msg
 atom info_trap
+atom inherit
 atom init
 atom initial_call
 atom input
@@ -472,6 +475,7 @@ atom nodeup
 atom noeol
 atom noproc
 atom normal
+atom normal_exit
 atom nosuspend
 atom no_fail
 atom no_float
@@ -586,6 +590,7 @@ atom return_time_trace
 atom return_to
 atom return_to_trace
 atom return_trace
+atom run_process
 atom run_queue
 atom run_queue_lengths
 atom run_queue_lengths_all
