@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -80,6 +82,8 @@ init_per_suite(Config) ->
                        {skip, "Engine not supported on this OpenSSL version"};
                    {error, bad_engine_id} ->
                        {skip, "Dynamic Engine not supported"};
+                   {error, notexist} ->
+                       {skip, "No Dynamic Engine to test with"};
                    Other ->
                        ct:log("Engine load failed: ~p",[Other]),
                        {fail, "Engine load failed"}

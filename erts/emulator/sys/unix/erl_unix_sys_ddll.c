@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2006-2016. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2006-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -128,7 +130,7 @@ int erts_sys_ddll_open_noext(char *dlname, void **handle, ErtsSysDdllError* err)
     int ret = ERL_DE_NO_ERROR;
     char *str;
     dlerror();
-    if ((*handle = dlopen(dlname, RTLD_NOW)) == NULL) {
+    if ((*handle = dlopen(dlname, RTLD_NOW | RTLD_LOCAL)) == NULL) {
 	str = dlerror();
 
 	if (err == NULL) {
@@ -180,6 +182,31 @@ int erts_sys_ddll_sym2(void *handle, const char *func_name, void **function,
 #endif
 }
 
+/* 
+ * Find a symbol in the shared object
+ */
+int erts_sys_ddll_vsym2(void *handle, const char *func_name, const char *vers,
+		       void **function, ErtsSysDdllError* err)
+{
+#if defined(HAVE_DLVSYM)
+    void *sym;
+    char *e;
+    int ret;
+    dlerror();
+    sym = dlvsym(handle, func_name, vers);
+    if ((e = dlerror()) != NULL) {
+	ret = ERL_DE_DYNAMIC_ERROR_OFFSET - find_errcode(e, err);
+        ASSERT(ret != ERL_DE_NO_ERROR);
+    } else {
+	*function = sym;
+	ret = ERL_DE_NO_ERROR;
+    }
+    return ret;
+#else
+    return ERL_DE_ERROR_NO_DDLL_FUNCTIONALITY;
+#endif
+}
+
 /* XXX:PaN These two will be changed with new driver interface! */
 
 /* 
@@ -188,12 +215,13 @@ int erts_sys_ddll_sym2(void *handle, const char *func_name, void **function,
 
 int erts_sys_ddll_load_driver_init(void *handle, void **function)
 {
-    void *fn;
+    void *fn = NULL;
     int res;
     if ((res = erts_sys_ddll_sym2(handle, "driver_init", &fn, NULL)) != ERL_DE_NO_ERROR) {
 	res = erts_sys_ddll_sym2(handle, "_driver_init", &fn, NULL);
     }
     if (res == ERL_DE_NO_ERROR) {
+        ASSERT(fn);
 	*function = fn;
     }
     return res;
@@ -201,12 +229,13 @@ int erts_sys_ddll_load_driver_init(void *handle, void **function)
 
 int erts_sys_ddll_load_nif_init(void *handle, void **function, ErtsSysDdllError* err)
 {
-    void *fn;
+    void *fn = NULL;
     int res;
     if ((res = erts_sys_ddll_sym2(handle, "nif_init", &fn, err)) != ERL_DE_NO_ERROR) {
 	res = erts_sys_ddll_sym2(handle, "_nif_init", &fn, err);
     }
     if (res == ERL_DE_NO_ERROR) {
+        ASSERT(fn);
 	*function = fn;
     }
     return res;

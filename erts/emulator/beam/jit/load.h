@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2020-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2020-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -25,9 +27,11 @@
  * Type for a label.
  */
 typedef struct {
-    Uint value;            /* Value of label (0 if not known yet). */
-    Uint looprec_targeted; /* Non-zero if this label is the target of a
-                            * loop_rec instruction. */
+    Uint value;           /* Value of label (0 if not known yet). */
+    int looprec_targeted; /* Non-zero if this label is the target of a
+                           * loop_rec instruction. */
+    int lambda_index;     /* The lambda index of this label, or -1 if not
+                           * a target of a lambda. */
 } Label;
 
 /*
@@ -41,8 +45,6 @@ typedef struct {
 
 /* This structure contains all information about the module being loaded. */
 struct LoaderState_ {
-    ErlDrvBinary *bin; /* Binary holding BEAM file (or NULL) */
-
     /*
      * The following are used mainly for diagnostics.
      */
@@ -82,15 +84,24 @@ struct LoaderState_ {
     unsigned int current_li; /* Current line instruction */
     unsigned int *func_line; /* Mapping from function to first line instr */
 
-    void *ba; /* Assembler used to create x86 assembly */
+    /*
+     * Coverage tables used during loading.
+     */
+    void *coverage;
+    byte *line_coverage_valid;
+    unsigned int current_index;
+    unsigned int *loc_index_to_cover_id;
 
-    const void *native_module_exec; /* Native module after codegen */
-    void *native_module_rw; /* Native module after codegen, writable mapping */
+    /* Translates lambda indexes to their canonical literal, if any. */
+    SWord *lambda_literals;
+
+    void *ba; /* Assembler used to create x86/AArch64 assembly */
+
+    const void *executable_region; /* Native module after codegen */
+    void *writable_region; /* Native module after codegen, writable mapping */
 
     int function_number;
     int last_label;
-
-    int otp_20_or_higher;
 
     BeamOpAllocator op_allocator;
     BeamFile beam;

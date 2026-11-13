@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2003-2020. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2003-2025. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,7 +16,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
+ *
  * %CopyrightEnd%
  */
 
@@ -52,7 +54,6 @@
 #endif
 
 #define MIN_MBC_SZ		(16*1024)
-#define MIN_MBC_FIRST_FREE_SZ	(4*1024)
 
 #define TREE_NODE_FLG		(((Uint) 1) << 0)
 #define RED_FLG			(((Uint) 1) << 1)
@@ -84,7 +85,7 @@
 
 
 #ifdef HARD_DEBUG
-static RBTree_t * check_tree(RBTree_t, int, Uint);
+static RBTree_t * check_tree(RBTree_t, int, size_t);
 #endif
 
 static void tree_delete(Allctr_t *allctr, Block_t *del);
@@ -92,14 +93,14 @@ static void tree_delete(Allctr_t *allctr, Block_t *del);
 /* Prototypes of callback functions */
 
 /* "address order best fit" specific callback functions */
-static Block_t *	aobf_get_free_block	(Allctr_t *, Uint,
-						 Block_t *, Uint);
+static Block_t *	aobf_get_free_block	(Allctr_t *, size_t,
+                                                 Block_t *, size_t);
 static void		aobf_link_free_block	(Allctr_t *, Block_t *);
 #define			aobf_unlink_free_block	tree_delete
 
 /* "best fit" specific callback functions */
-static Block_t *	bf_get_free_block	(Allctr_t *, Uint,
-						 Block_t *, Uint);
+static Block_t *	bf_get_free_block	(Allctr_t *, size_t,
+                                                 Block_t *, size_t);
 static void		bf_link_free_block	(Allctr_t *, Block_t *);
 static ERTS_INLINE void	bf_unlink_free_block	(Allctr_t *, Block_t *);
 
@@ -179,7 +180,6 @@ erts_bfalc_start(BFAllctr_t *bfallctr,
 
     allctr->mbc_header_size		= sizeof(Carrier_t);
     allctr->min_mbc_size		= MIN_MBC_SZ;
-    allctr->min_mbc_first_free_size	= MIN_MBC_FIRST_FREE_SZ;
     allctr->min_block_size		= (bfinit->ao
 					   ? sizeof(RBTree_t)
 					   : sizeof(RBTreeList_t));
@@ -414,7 +414,7 @@ static void
 tree_delete(Allctr_t *allctr, Block_t *del)
 {
     BFAllctr_t *bfallctr = (BFAllctr_t *) allctr;
-    Uint spliced_is_black;
+    bool spliced_is_black;
     RBTree_t **root = &bfallctr->mbc_root;
     RBTree_t *x, *y, *z = (RBTree_t *) del;
     RBTree_t null_x; /* null_x is used to get the fixup started when we
@@ -594,7 +594,7 @@ aobf_link_free_block(Allctr_t *allctr, Block_t *block)
     BFAllctr_t *bfallctr = (BFAllctr_t *) allctr;
     RBTree_t **root = &bfallctr->mbc_root;
     RBTree_t *blk = (RBTree_t *) block;
-    Uint blk_sz = BF_BLK_SZ(blk);
+    size_t blk_sz = BF_BLK_SZ(blk);
 
 
     blk->flags	= 0;
@@ -609,7 +609,7 @@ aobf_link_free_block(Allctr_t *allctr, Block_t *block)
     else {
 	RBTree_t *x = *root;
 	while (1) {
-	    Uint size;
+            size_t size;
 
 	    size = BF_BLK_SZ(x);
 
@@ -654,14 +654,14 @@ aobf_unlink_free_block(Allctr_t *allctr, Block_t *block)
 #endif
 
 static Block_t *
-aobf_get_free_block(Allctr_t *allctr, Uint size,
-		    Block_t *cand_blk, Uint cand_size)
+aobf_get_free_block(Allctr_t *allctr, size_t size,
+                    Block_t *cand_blk, size_t cand_size)
 {
     BFAllctr_t *bfallctr = (BFAllctr_t *) allctr;
     RBTree_t **root = &bfallctr->mbc_root;
     RBTree_t *x = *root;
     RBTree_t *blk = NULL;
-    Uint blk_sz;
+    size_t blk_sz;
 
     ASSERT(!cand_blk || cand_size >= size);
 
@@ -707,7 +707,7 @@ bf_link_free_block(Allctr_t *allctr, Block_t *block)
     BFAllctr_t *bfallctr = (BFAllctr_t *) allctr;
     RBTree_t **root = &bfallctr->mbc_root;
     RBTree_t *blk = (RBTree_t *) block;
-    Uint blk_sz = BF_BLK_SZ(blk);
+    size_t blk_sz = BF_BLK_SZ(blk);
 
     SET_TREE_NODE(blk);
 
@@ -724,7 +724,7 @@ bf_link_free_block(Allctr_t *allctr, Block_t *block)
     else {
 	RBTree_t *x = *root;
 	while (1) {
-	    Uint size;
+            size_t size;
 
 	    size = BF_BLK_SZ(x);
 
@@ -737,7 +737,7 @@ bf_link_free_block(Allctr_t *allctr, Block_t *block)
 		    BF_LIST_PREV(BF_LIST_NEXT(x)) = blk;
 		BF_LIST_NEXT(x) = blk;
 
-		return; /* Finnished */
+		return; /* Finished */
 	    }
 	    else if (blk_sz < size) {
 		if (!x->left) {
@@ -813,14 +813,14 @@ bf_unlink_free_block(Allctr_t *allctr, Block_t *block)
 
 
 static Block_t *
-bf_get_free_block(Allctr_t *allctr, Uint size,
-		  Block_t *cand_blk, Uint cand_size)
+bf_get_free_block(Allctr_t *allctr, size_t size,
+                  Block_t *cand_blk, size_t cand_size)
 {
     BFAllctr_t *bfallctr = (BFAllctr_t *) allctr;
     RBTree_t **root = &bfallctr->mbc_root;
     RBTree_t *x = *root;
     RBTree_t *blk = NULL;
-    Uint blk_sz;
+    size_t blk_sz;
 
     ASSERT(!cand_blk || cand_size >= size);
 
@@ -1011,11 +1011,11 @@ static void print_tree(RBTree_t *, int);
 
 /*
  * Checks that the order between parent and children are correct,
- * and that the Red-Black Tree properies are satisfied. if size > 0,
+ * and that the Red-Black Tree properties are satisfied. if size > 0,
  * check_tree() returns a node that satisfies "best fit" resp.
  * "address order best fit".
  *
- * The Red-Black Tree properies are:
+ * The Red-Black Tree properties are:
  *   1. Every node is either red or black.
  *   2. Every leaf (NIL) is black.
  *   3. If a node is red, then both its children are black.
@@ -1024,7 +1024,7 @@ static void print_tree(RBTree_t *, int);
  */
 
 static RBTree_t *
-check_tree(RBTree_t *root, int ao, Uint size)
+check_tree(RBTree_t *root, int ao, size_t size)
 {
     RBTree_t *res = NULL;
     Sint blacks;
@@ -1159,10 +1159,10 @@ print_tree_aux(RBTree_t *x, int indent)
 	for (i = 0; i < indent; i++) {
 	    putc(' ', stderr);
 	}
-	fprintf(stderr, "%s: sz=%lu addr=0x%lx\r\n",
+        fprintf(stderr, "%s: sz=%zu addr=0x%p\r\n",
 		IS_BLACK(x) ? "BLACK" : "RED",
 		BF_BLK_SZ(x),
-		(Uint) x);
+                x);
 	print_tree_aux(x->left,  indent + INDENT_STEP);
     }
 }

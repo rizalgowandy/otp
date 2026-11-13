@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1998-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1998-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -22,8 +24,8 @@
 
 -export([all/0, suite/0,groups/0,init_per_suite/1, end_per_suite/1, 
 	 init_per_group/2,end_per_group/2,
-	 head_mismatch_line/1,warnings_as_errors/1, bif_clashes/1,
-	 transforms/1,maps_warnings/1,bad_utf8/1,bad_decls/1]).
+	 head_mismatch_line/1, head_mismatch_same_function_name/1, warnings_as_errors/1,
+	 bif_clashes/1, transforms/1,maps_warnings/1,bad_utf8/1,bad_decls/1]).
 
 %% Used by transforms/1 test case.
 -export([parse_transform/2]).
@@ -35,7 +37,8 @@ all() ->
 
 groups() -> 
     [{p,test_lib:parallel(),
-      [head_mismatch_line,warnings_as_errors,bif_clashes,
+      [head_mismatch_line,head_mismatch_same_function_name,
+       warnings_as_errors,bif_clashes,
        transforms,maps_warnings,bad_utf8,bad_decls]}].
 
 init_per_suite(Config) ->
@@ -63,8 +66,8 @@ bif_clashes(Config) when is_list(Config) ->
                erlang:length(X).
              ">>,
            [return_warnings],
-	   {error,
-	    [{{4,18}, erl_lint,{call_to_redefined_old_bif,{length,1}}}], []} }],
+	   {warning,
+	    [{{4,18}, erl_lint,{call_to_redefined_bif,{length,1}}}]} }],
     [] = run(Config, Ts),
     Ts1 = [{bif_clashes2,
            <<"
@@ -74,8 +77,8 @@ bif_clashes(Config) when is_list(Config) ->
                  length([a,b,c]).
              ">>,
            [return_warnings],
-	    {error,
-	     [{{3,16}, erl_lint,{redefine_old_bif_import,{length,1}}}], []} }],
+	    {warning,
+	     [{{3,16}, erl_lint,{redefine_bif_import,{length,1}}}]} }],
     [] = run(Config, Ts1),
     Ts00 = [{bif_clashes3,
            <<"
@@ -176,7 +179,20 @@ bif_clashes(Config) when is_list(Config) ->
 %% Tests that a head mismatch is reported on the correct line (OTP-2125).
 head_mismatch_line(Config) when is_list(Config) ->
     [E|_] = get_compilation_errors(Config, "head_mismatch_line"),
-    {{26,1}, Mod, Reason} = E,
+    {{28,1}, Mod, Reason} = E,
+    ("head mismatch: previous function foo/1 is distinct from bar/1. "
+     "Is the semicolon in foo/1 unwanted?") = lists:flatten(Reason),
+    Mod:format_error(Reason),
+    ok.
+
+%% Tests that a head mismatch with the same function name reports a different error from above.
+%% https://github.com/erlang/otp/pull/7383#issuecomment-1586564294
+head_mismatch_same_function_name(Config) when is_list(Config) ->
+    [E|_] = get_compilation_errors(Config, "head_mismatch_same_function_name"),
+    {{27,1}, Mod, Reason} = E,
+    ("head mismatch: function foo with arities 1 and 2 is regarded as "
+     "two distinct functions. Is the number of arguments incorrect "
+     "or is the semicolon in foo/1 unwanted?") = lists:flatten(Reason),
     Mod:format_error(Reason),
     ok.
 
@@ -230,24 +246,37 @@ transforms(Config) ->
 	    [return],
 	    {error,[{none,compile,{undef_parse_transform,non_existing}}],[]}}],
     [] = run(Config, Ts1),
+
     Ts2 = <<"
               -compile({parse_transform,",?MODULE_STRING,"}).
              ">>,
-    {error,[{none,compile,{parse_transform,?MODULE,{too_bad,_}}}],[]} =
-	run_test(Ts2, test_filename(Config), [], dont_write_beam),
-    Ts3 = <<"
-              -compile({parse_transform,",?MODULE_STRING,"}).
-             ">>,
-    {error,[{none,compile,{parse_transform,?MODULE,{undef,_}}}],[]} =
-        run_test(Ts3, test_filename(Config), [call_undef], dont_write_beam),
+
+    {error,[{none,compile,{parse_transform,?MODULE,{error,too_bad,_}}}],[]} =
+	run_test(Ts2, test_filename(Config), [{pt_error,error}], dont_write_beam),
+
+    {error,[{none,compile,{parse_transform,?MODULE,{error,undef,_}}}],[]} =
+        run_test(Ts2, test_filename(Config), [{pt_error,call_undef}], dont_write_beam),
+
+    {error,[{none,compile,{parse_transform,?MODULE,{exit,exited,_}}}],[]} =
+        run_test(Ts2, test_filename(Config), [{pt_error,exit}], dont_write_beam),
+
+    {error,[{none,compile,{parse_transform,?MODULE,{throw,thrown,[_|_]}}}],[]} =
+        run_test(Ts2, test_filename(Config), [{pt_error,throw}], dont_write_beam),
+
     ok.
 
 parse_transform(_, Opts) ->
-    case lists:member(call_undef, Opts) of
-        false -> error(too_bad);
-        true -> camembert:délicieux()
+    {_,Error} = lists:keyfind(pt_error, 1, Opts),
+    case Error of
+        call_undef ->
+            camembert:délicieux();
+        throw ->
+            throw(thrown);
+        exit ->
+            exit(exited);
+        error ->
+            error(too_bad)
     end.
-
 
 maps_warnings(Config) when is_list(Config) ->
     Ts1 = [{map_ok_use_of_pattern,
@@ -367,8 +396,7 @@ bad_decls(Config) ->
 	   <<"\n-record(A, {{bad,a}}).
              ">>,
 	   [],
-           {error,[{{2,9},erl_parse,"bad " ++ ["record"] ++ " declaration"}],
-            []}
+           {error,[{{2,9},erl_parse,["syntax error before: ","A"]}],[]}
            },
           {bad_decls_11,
 	   <<"\n-record(a, [a,b,c,d]).
@@ -380,8 +408,7 @@ bad_decls(Config) ->
 	   <<"\n-record(a).
              ">>,
 	   [],
-           {error,[{{2,9},erl_parse,"bad " ++ ["record"] ++ " declaration"}],
-            []}
+           {error,[{{2,10},erl_parse,["syntax error before: ","')'"]}],[]}
            }
           ],
     [] = run2(Config, Ts),
@@ -401,12 +428,13 @@ run(Config, Tests) ->
 
 run(Tests, File, WriteBeam) ->
     F = fun({N,P,Ws,E}, BadL) ->
-                case catch run_test(P, File, Ws, WriteBeam) of
-                    E -> 
-                        BadL;
-                    Bad -> 
+                try run_test(P, File, Ws, WriteBeam) of
+                    E ->
+                        BadL
+                catch
+                    error:Bad:Stack ->
                         io:format("~nTest ~p failed. Expected~n  ~p~n"
-                                  "but got~n  ~p~n", [N, E, Bad]),
+                                  "but got~n  ~p ~p~n", [N, E, Bad, Stack]),
 			fail()
                 end
         end,
@@ -418,12 +446,13 @@ run2(Config, Tests) ->
 
 run2(Tests, File, WriteBeam) ->
     F = fun({N,P,Ws,E}, BadL) ->
-                case catch filter(run_test(P, File, Ws, WriteBeam)) of
+                try filter(run_test(P, File, Ws, WriteBeam)) of
                     E ->
-                        BadL;
-                    Bad ->
+                        BadL
+                catch
+                    error:Bad:Stack ->
                         io:format("~nTest ~p failed. Expected~n  ~p~n"
-                                  "but got~n  ~p~n", [N, E, Bad]),
+                                  "but got~n  ~p ~p~n", [N, E, Bad, Stack]),
 			fail()
                 end
         end,

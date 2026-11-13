@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 1999-2016. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1999-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(format).
@@ -24,6 +26,8 @@
 %%% There will be warnings at level 2 and 3.
 
 f(F) ->
+    io:format("~p"),                            %1
+
     io:format("~", F),				%2
     io:format("~", [F]),			%1
     io:format(a, b),				%1
@@ -35,6 +39,7 @@ f(F) ->
     io:format("la cucaracha~n"),
     io:format(""),
     io:format("~p ~p~n", [F]),			%1
+    io:format("~p ~p~n", [1,2,F]),		%1
     io:format("~p~n", [F]),
     io:format("~m"),				%1
     io:format(F, "~p", []),			%1
@@ -48,6 +53,14 @@ f(F) ->
     io:format("~14p", [F]),
     io:format("~*p", [a, F]),			%no type checking
     io:format("~*p", [14, F]),
+    
+    io:format("~tlp", [F]),			%1
+    io:format("~kKp", [undefined, F]),		%1
+    io:format("~tb", [1]),			%1
+    io:format("~lb", [1]),			%1
+    io:format("~kb", [1]),			%1
+    io:format("~Kb", [undefined, 1]),		%1
+    io:format("~llp", [F]),			%1
 
     io:fwrite("~p", []),			%1
     io_lib:format("~p", []),			%1

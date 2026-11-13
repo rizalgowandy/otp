@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2008-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2008-2026. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -24,8 +26,8 @@
 %%% Created : 17 Jan 2007 by Dan Gudmundsson <dgud@erix.ericsson.se>
 %%%-------------------------------------------------------------------
 
-%% @hidden
 -module(wxe_master).
+-moduledoc false.
 -behaviour(gen_server).
 
 %% API
@@ -35,10 +37,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
--record(state, {cb_port,  %% Callback port and to erlang messages goes via it.
-		users,    %% List of wx servers, needed ??
-		driver,   %% Driver name so wx_server can create it's own port
-		msgs=[]   %% Early messages (such as openfiles on OSX)
+-record(state, {subscribers=[],  %% WxApp messages listeners
+		msgs=[]   %% WxApp messages (open_file and new_file on MacOSX)
 	       }).
 
 -include("wxe.hrl").
@@ -76,14 +76,16 @@ init_env(SilentStart) ->
 
 
 %%--------------------------------------------------------------------
-%% Initalizes the opengl library
+%% Initializes the opengl library
 %%--------------------------------------------------------------------
 init_opengl() ->
     case get(wx_init_opengl) of
         true -> {ok, "already  initialized"};
         _ ->
-            Opaque = gl:lookup_func(),
-            {ok, wxe_util:init_opengl(Opaque)}
+            Opaque = gl:lookup_func(functions),
+            Debug = gl:lookup_func(function_names),
+            put(wx_init_opengl, true),
+            {ok, wxe_util:init_opengl(Opaque, Debug)}
     end.
 
 %%--------------------------------------------------------------------
@@ -125,7 +127,8 @@ init([SilentStart]) ->
         wxe_util:setup_consts(),
 	{ok, #state{}}
     catch _:Error:ST ->
-            io:format("Error: ~p @ ~p~n",[Error, ST]),
+            Str = io_lib:format("Error: ~p @ ~p~n",[Error, ST]),
+            logger:log(error, Str, #{domain => [wx]}),
 	    error({error, {Error, "Could not initiate graphics"}})
     end.
 
@@ -141,7 +144,12 @@ init([SilentStart]) ->
 handle_call(init_env, _From, State) ->
     {reply, ok, State};
 handle_call(fetch_msgs, _From, State=#state{msgs=Msgs}) ->
-    {reply, lists:reverse(Msgs), State#state{msgs=[]}};
+    NewFiles = [Data || {Type, Data} <- lists:reverse(Msgs), Type == new_file],
+    {reply, NewFiles, State#state{msgs=[]}};
+handle_call(subscribe_msgs, {Pid, _Tag}, State=#state{subscribers=Subs}) ->
+    monitor(process, Pid),
+    lists:foreach(fun(Msg) -> Pid ! Msg end, lists:reverse(State#state.msgs)),
+    {reply, ok, State#state{subscribers=[Pid|Subs], msgs=[]}};
 handle_call(_Request, _From, State) ->
     %%io:format("Unknown request ~p sent to ~p from ~p ~n",[_Request, ?MODULE, _From]),
     Reply = ok,
@@ -164,18 +172,30 @@ handle_cast(_Msg, State) ->
 %% Description: Handling all non call/cast messages
 %%--------------------------------------------------------------------
 handle_info({wxe_driver, error, Msg}, State) ->
-    error_logger:error_report([{wx, error}, {message, lists:flatten(Msg)}]),
+    logger:log(error, "wx: ~s", [Msg], #{domain => [wx]}),
     {noreply, State};
 handle_info({wxe_driver, internal_error, Msg}, State) ->
-    error_logger:error_report([{wx, internal_error}, {message, lists:flatten(Msg)}]),
+    logger:log(error, "wx: ~s", [Msg], #{domain => [wx]}),
+    {noreply, State};
+handle_info({wxe_driver, warning, Msg}, State) ->
+    logger:log(warning, "wx: ~s", [Msg], #{domain => [wx]}),
     {noreply, State};
 handle_info({wxe_driver, debug, Msg}, State) ->
-    io:format("WX DBG: ~s~n", [Msg]),
+    logger:log(notice, "wx: ~s", [Msg], #{domain => [wx]}),
     {noreply, State};
-handle_info({wxe_driver, open_file, File}, State=#state{msgs=Msgs}) ->
-    {noreply, State#state{msgs=[File|Msgs]}};
-handle_info(_Info, State) ->
-    io:format("Unknown message ~p sent to ~p~n",[_Info, ?MODULE]),
+handle_info({wxe_driver, Cmd, File}, State = #state{subscribers=Subs, msgs=Msgs}) 
+  when Cmd =:= open_file; Cmd =:= new_file; Cmd =:= print_file; 
+       Cmd =:= open_url; Cmd =:= reopen_app ->
+    lists:foreach(fun(Pid) -> Pid ! {Cmd, File} end, Subs),
+    case Subs of
+        [] -> {noreply, State#state{msgs=[{Cmd, File}|Msgs]}};
+        _  -> {noreply, State}
+    end;
+handle_info({'DOWN', _Ref, process, Pid, _Info}, State) ->
+    Subs = State#state.subscribers -- [Pid],
+    {noreply, State#state{subscribers=Subs}};
+handle_info(Info, State) ->
+    logger:log(notice, "wx: Unexpected Msg: ~p", [Info], #{domain => [wx], line=>?LINE, file=>?MODULE_STRING}),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
@@ -186,7 +206,6 @@ handle_info(_Info, State) ->
 %% The return value is ignored.
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
-    erlang:display({?MODULE, killed, process_info(self(),trap_exit),_Reason}),
     ok.
 
 %%--------------------------------------------------------------------

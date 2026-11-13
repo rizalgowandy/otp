@@ -1,7 +1,9 @@
 %%%-------------------------------------------------------------------
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2015-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2015-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -156,6 +158,7 @@ transfer_text(Config) ->
                {password, proplists:get_value(pwd,      Config)},
                {user_dir, proplists:get_value(priv_dir, Config)},
                {silently_accept_hosts, true},
+               {save_accepted_host, false},
                {user_interaction, false},
                {max_random_length_padding, 0}
               ],

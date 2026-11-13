@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2017-2020. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2017-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(raw_file_io_delayed).
+-moduledoc false.
 
 -behavior(gen_statem).
 
@@ -27,7 +30,7 @@
          read_handle_info/2]).
 
 %% OTP internal.
--export([ipread_s32bu_p32bu/3, sendfile/8]).
+-export([ipread_s32bu_p32bu/3, sendfile/8, internal_get_nif_resource/1]).
 
 -export([open_layer/3]).
 
@@ -303,6 +306,9 @@ ipread_s32bu_p32bu(Fd, Offset, MaxSize) ->
     wrap_call(Fd, [ipread_s32bu_p32bu, Offset, MaxSize]).
 
 sendfile(_,_,_,_,_,_,_,_) ->
+    {error, enotsup}.
+
+internal_get_nif_resource(_) ->
     {error, enotsup}.
 
 read_handle_info(Fd, Opts) ->

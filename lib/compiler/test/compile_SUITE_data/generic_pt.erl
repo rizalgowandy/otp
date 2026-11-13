@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2021-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -40,7 +42,11 @@ actions(Source, Forms, Options) ->
         error ->
             {error, Es, Ws};
         undefined_error ->
-            {error, [{Source, [{{1,1}, ?MODULE, unknown_error}]}], []}
+            {error, [{Source, [{{1,1}, ?MODULE, unknown_error}]}], []};
+        throw ->
+            throw(thrown);
+        exit ->
+            exit(exited)
     end.
 
 format_error(bad_moon_phase) ->

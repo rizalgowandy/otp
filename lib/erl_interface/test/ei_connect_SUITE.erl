@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2001-2020. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2001-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,7 +16,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 
@@ -28,6 +30,7 @@
          init_per_testcase/2,
          ei_send/1,
          ei_reg_send/1,
+         ei_reg_send_large/1,
          ei_format_pid/1,
          ei_rpc/1,
          rpc_test/1,
@@ -57,6 +60,7 @@ groups() ->
                ei_send_funs,
                ei_set_get_tracelevel,
                ei_reg_send,
+               ei_reg_send_large,
                ei_rpc,
                ei_make_ref,
                ei_make_pid,
@@ -122,6 +126,21 @@ ei_reg_send(Config) when is_list(Config) ->
     ARegName = a_strange_registred_name,
     register(ARegName, self()),
     ok = ei_reg_send(P, Fd, ARegName, AMsg={another,[strange],message}),
+    receive AMsg -> ok end,
+
+    runner:send_eot(P),
+    runner:recv_eot(P),
+    ok.
+
+ei_reg_send_large(Config) when is_list(Config) ->
+    P = runner:start(Config, ?interpret),
+    0 = ei_connect_init(P, 42, erlang:get_cookie(), 0, get_group(Config)),
+    {ok,Fd} = ei_connect(P, node()),
+
+    ARegName = a_strange_registred_name,
+    register(ARegName, self()),
+    ok = ei_reg_send(P, Fd, ARegName, AMsg={another,[strange],message,
+                                            <<0:(32*1024*1024*8)>>}),
     receive AMsg -> ok end,
 
     runner:send_eot(P),

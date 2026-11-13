@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 1999-2017. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 1999-2025. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,13 +58,15 @@ typedef struct LoaderState_ LoaderState;
 int beam_load_prepared_dtor(Binary *magic);
 void beam_load_prepared_free(Binary *magic);
 
-void beam_load_prepare_emit(LoaderState *stp);
+int beam_load_prepare_emit(LoaderState *stp);
 int beam_load_emit_op(LoaderState *stp, BeamOp *op);
 int beam_load_finish_emit(LoaderState *stp);
 
 struct erl_module_instance;
 void beam_load_finalize_code(LoaderState *stp,
                              struct erl_module_instance* inst_p);
+
+void beam_load_purge_aux(const BeamCodeHeader *hdr);
 
 void beam_load_new_genop(LoaderState* stp);
 
@@ -116,6 +120,8 @@ int erts_beam_eval_predicate(unsigned int op, LoaderState* st,
 BeamOp* erts_beam_execute_transform(unsigned int op, LoaderState* st,
                                     BeamOpArg var[], BeamOpArg* rest_args);
 
-void erts_beam_bif_load_init(void);
+void erts_beam_bif_load_init(Uint);
+Uint erts_get_outstanding_system_requests_limit(void);
+Uint erts_set_outstanding_system_requests_limit(Uint new_val);
 
 #endif /* _BEAM_LOAD_H */

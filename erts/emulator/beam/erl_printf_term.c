@@ -1,7 +1,9 @@
 /*
  * %CopyrightBegin%
  *
- * Copyright Ericsson AB 2005-2020. All Rights Reserved.
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2005-2026. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,6 +29,7 @@
 #include "big.h"
 #include "erl_map.h"
 #include "erl_binary.h"
+#include "erl_record.h"
 
 #define PRINT_CHAR(CNT, FN, ARG, C)					\
 do {									\
@@ -139,8 +142,6 @@ do {                                                        \
 #define IS_CNTRL(c)  ((c) < ' ' || (c) >= 127)
 #endif
 
-#define IS_PRINT(c)  (!IS_CNTRL(c))
-
 /* return 0 if list is not a non-empty flat list of printable characters */
 
 static int
@@ -185,84 +186,145 @@ static int is_printable_ascii(byte* bytep, Uint bytesize, Uint bitoffs)
     return 1;
 }
 
-/* print a atom doing what quoting is necessary */
-static int print_atom_name(fmtfn_t fn, void* arg, Eterm atom, long *dcount)
+/*
+ * Helper function for print_atom_name() that decodes Utf8. After decoding a 
+ * valid character, the offset is updated to point to the next character. size 
+ * is only used for debugging.
+ */
+static ERTS_INLINE int utf8_decode(const byte *text, int *offset, int size)
 {
-    int n, i;
-    int res;
-    int need_quote;
-    int pos;
-    byte *s;
-    byte *cpos;
-    int c;
+    int component = text[*offset];
+    int codepoint = 0;
+    int length = 0;
 
-    res = 0;
-    i = atom_val(atom);
+    if ((component & 0x80) == 0) {
+        codepoint = component;
+        length = 1;
+    } else if ((component & 0xE0) == 0xC0) {
+        codepoint = component & 0x1F;
+        length = 2;
+    } else if ((component & 0xF0) == 0xE0) {
+        codepoint = component & 0x0F;
+        length = 3;
+    } else {
+        ASSERT((component & 0xF8) == 0xF0);
+        codepoint = component & 0x07;
+        length = 4;
+    } 
 
-    if ((i < 0) || (i >= atom_table_size()) ||  (atom_tab(i) == NULL)) {
-	PRINT_STRING(res, fn, arg, "<bad atom index: ");
-	PRINT_SWORD(res, fn, arg, 'd', 0, 1, (ErlPfSWord) i);
-	PRINT_CHAR(res, fn, arg, '>');
-	return res;
+    /* Assert that there are enough bytes for decoding */
+    ASSERT(*offset + length <= size);
+
+    for (int i = 1; i < length; i++) {
+        component = text[*offset + i];
+        ASSERT((component & 0xC0) == 0x80);
+        codepoint = (codepoint << 6) | (component & 0x3F);
     }
 
-    s = atom_tab(i)->name;
-    n = atom_tab(i)->len;
-
-    *dcount -= atom_tab(i)->len;
-
-    if (n == 0) {
-	PRINT_STRING(res, fn, arg, "''");
-	return res;
-    }
-
-
-    need_quote = 0;
-    cpos = s;
-    pos = n - 1;
-
-    c = *cpos++;
-    if (!IS_LOWER(c))
-	need_quote++;
-    else {
-	while (pos--) {
-	    c = *cpos++;
-	    if (!IS_ALNUM(c) && (c != '_')) {
-		need_quote++;
-		break;
-	    }
-	}
-    }
-    cpos = s;
-    pos = n;
-    if (need_quote)
-	PRINT_CHAR(res, fn, arg, '\'');
-    while(pos--) {
-	c = *cpos++;
-	switch(c) {
-	case '\'': PRINT_STRING(res, fn, arg, "\\'"); break;
-	case '\\': PRINT_STRING(res, fn, arg, "\\\\"); break;
-	case '\n': PRINT_STRING(res, fn, arg, "\\n"); break;
-	case '\f': PRINT_STRING(res, fn, arg, "\\f"); break;
-	case '\t': PRINT_STRING(res, fn, arg, "\\t"); break;
-	case '\r': PRINT_STRING(res, fn, arg, "\\r"); break;
-	case '\b': PRINT_STRING(res, fn, arg, "\\b"); break;
-	case '\v': PRINT_STRING(res, fn, arg, "\\v"); break;
-	default:
-	    if (IS_CNTRL(c)) {
-		PRINT_CHAR(res, fn, arg, '\\');
-		PRINT_UWORD(res, fn, arg, 'o', 1, 3, (ErlPfUWord) c);
-	    }
-	    else
-		PRINT_CHAR(res, fn, arg, (char) c);
-	    break;
-	}
-    }
-    if (need_quote)
-	PRINT_CHAR(res, fn, arg, '\'');
-    return res;
+    *offset += length;
+    return codepoint;
 }
 
+/*
+ * Print a atom, quoting it if necessary.
+ *
+ * Atoms are encoded in utf8. Since we have full control over creation
+ * of atoms, the utf8 encoding is always correct and there is no need
+ * to check for errors.
+ */
+static int print_atom_name(fmtfn_t fn, void* arg, Eterm atom, long *dcount)
+{
+    int length, index;
+    const Atom *entry;
+    int result;
+    int need_quote;
+    int position;
+    const byte *s;
+    int codepoint;
+
+    result = 0;
+    index = atom_val(atom);
+    entry = NULL;
+
+    if ((index > 0) || (index <= atom_table_size()) ) {
+        entry = atom_tab(index);
+    }
+
+    if (entry == NULL) {
+        PRINT_STRING(result, fn, arg, "<bad atom index: ");
+	    PRINT_SWORD(result, fn, arg, 'd', 0, 1, (ErlPfSWord) index);
+	    PRINT_CHAR(result, fn, arg, '>');
+	    return result;
+    }
+
+    s = erts_atom_get_name(entry);
+    length = entry->len;
+
+    *dcount -= entry->len;
+
+    if (length == 0) {
+        /* The empty atom: '' */
+	PRINT_STRING(result, fn, arg, "''");
+	return result;
+    }
+
+    /*
+     * Find out whether the atom will need quoting. Quoting is not necessary
+     * if the following applies:
+     *
+     *   - The first character is a lowercase letter in the Latin-1 code
+     *     block (0-255).
+     *
+     *   - All other characters are either alphanumeric characters in
+     *     the Latin-1 code block or the character '_'.
+     */
+
+    position = 0;
+    codepoint = utf8_decode(s, &position, length);
+    need_quote = !IS_LOWER(codepoint);
+    while (position < length && !need_quote) {
+        codepoint = utf8_decode(s, &position, length);
+        need_quote = !IS_ALNUM(codepoint) && codepoint != '_';
+    }
+
+    /*
+     * Now output the atom, including single quotes if needed.
+     *
+     * Control characters (including the range 128-159) must
+     * be specially printed. Therefore, we must do a partial
+     * decoding of the utf8 encoding.
+     */
+    position = 0;
+    if (need_quote)
+	PRINT_CHAR(result, fn, arg, '\'');
+
+    while(position < length) {
+        int cp_start = position;
+        codepoint = utf8_decode(s, &position, length);
+        switch(codepoint) {
+        case '\'': PRINT_STRING(result, fn, arg, "\\'"); break;
+        case '\\': PRINT_STRING(result, fn, arg, "\\\\"); break;
+        case '\n': PRINT_STRING(result, fn, arg, "\\n"); break;
+        case '\f': PRINT_STRING(result, fn, arg, "\\f"); break;
+        case '\t': PRINT_STRING(result, fn, arg, "\\t"); break;
+        case '\r': PRINT_STRING(result, fn, arg, "\\r"); break;
+        case '\b': PRINT_STRING(result, fn, arg, "\\b"); break;
+        case '\v': PRINT_STRING(result, fn, arg, "\\v"); break;
+        default:
+            if (codepoint < 32 || (codepoint >= 128 && codepoint <= 159)) {
+                /* ASCII control character (0-31) or extended ASCII control character (128-159)*/
+                PRINT_CHAR(result, fn, arg, '\\');
+                PRINT_UWORD(result, fn, arg, 'o', 1, 3, (ErlPfUWord) codepoint);
+            } else {
+                PRINT_BUF(result, fn, arg, &s[cp_start], position - cp_start);
+            }
+            break;
+        }
+    }
+    if (need_quote)
+	PRINT_CHAR(result, fn, arg, '\'');
+    return result;
+}
 
 #define PRT_BAR                ((Eterm) 0)
 #define PRT_COMMA              ((Eterm) 1)
@@ -272,7 +334,8 @@ static int print_atom_name(fmtfn_t fn, void* arg, Eterm atom, long *dcount)
 #define PRT_TERM               ((Eterm) 5)
 #define PRT_ONE_CONS           ((Eterm) 6)
 #define PRT_PATCH_FUN_SIZE     ((Eterm) 7)
-#define PRT_LAST_ARRAY_ELEMENT ((Eterm) 8) /* Note! Must be last... */
+#define PRT_EQUALS             ((Eterm) 8)
+#define PRT_LAST_ARRAY_ELEMENT ((Eterm) 9) /* Note! Must be last... */
 
 #if 0
 static char *format_binary(Uint16 x, char *b) {
@@ -297,7 +360,7 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
 	Eterm* ptr;
     }popped;
     Eterm* nobj;
-    Wterm wobj;
+    Eterm wobj;
 
     res = 0;
 
@@ -320,6 +383,9 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
 	    goto L_outer_loop;
 	case PRT_ASSOC:
 	    PRINT_STRING(res, fn, arg, "=>");
+	    goto L_outer_loop;
+	case PRT_EQUALS:
+	    PRINT_STRING(res, fn, arg, "=");
 	    goto L_outer_loop;
 	default:
 	    popped.word = WSTACK_POP(s);
@@ -386,8 +452,12 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
                 PRINT_CHAR(res, fn, arg, '>');
             }
 	    goto L_done;
-	}
-	wobj = (Wterm)obj;
+	} else if (is_catch(obj) && catch_val(obj) == 0) {
+            /* Missing default value in a native record definition. */
+            PRINT_STRING(res, fn, arg, "<novalue>");
+	    goto L_outer_loop;
+        }
+	wobj = (Eterm)obj;
 	switch (tag_val_def(wobj)) {
 	case NIL_DEF:
 	    PRINT_STRING(res, fn, arg, "[]");
@@ -423,7 +493,7 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
 	case REF_DEF:
             if (!ERTS_IS_CRASH_DUMPING)
                 erts_magic_ref_save_bin(obj);
-            /* fall through... */
+            ERTS_FALLTHROUGH();
 	case EXTERNAL_REF_DEF:
 	    PRINT_STRING(res, fn, arg, "#Ref<");
 	    PRINT_UWORD(res, fn, arg, 'u', 0, 1,
@@ -485,30 +555,62 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
 		goto L_print_one_cons;
 	    }
 	    break;
-	case TUPLE_DEF:
-	    nobj = tuple_val(wobj);	/* pointer to arity */
-	    i = arityval(*nobj);	/* arity */
-	    PRINT_CHAR(res, fn, arg, '{');
-	    WSTACK_PUSH(s,PRT_CLOSE_TUPLE);
-	    ++nobj;
-	    if (i > 0) {
-		WSTACK_PUSH2(s, (UWord) nobj, PRT_LAST_ARRAY_ELEMENT+i-1);
-	    }
-	    break;
+        case RECORD_DEF:
+            {
+                ErtsRecordInstance *instance;
+                ErtsRecordDefinition *defp;
+                Eterm *ks, *vs;
+                int n;
+
+                instance = RECORD_INST_P(wobj);
+                n = RECORD_INST_FIELD_COUNT(instance);
+                defp = RECORD_DEF_P(instance);
+                ks = defp->keys;
+                vs = instance->values;
+                PRINT_CHAR(res, fn, arg, '#');
+                PRINT_ATOM(res, fn, arg, defp->module, dcount);
+                PRINT_CHAR(res, fn, arg, ':');
+                PRINT_ATOM(res, fn, arg, defp->name, dcount);
+                PRINT_CHAR(res, fn, arg, '{');
+                WSTACK_PUSH(s, PRT_CLOSE_TUPLE);
+                if (n > 0) {
+                    n--;
+                    WSTACK_PUSH5(s, vs[n], PRT_TERM, PRT_EQUALS, ks[n], PRT_TERM);
+                    while (n--) {
+                        WSTACK_PUSH6(s, PRT_COMMA, vs[n], PRT_TERM, PRT_EQUALS,
+                                ks[n], PRT_TERM);
+                    }
+                }
+            }
+            break;
+        case TUPLE_DEF:
+            nobj = tuple_val(wobj);     /* pointer to arity */
+            i = arityval(*nobj);        /* arity */
+            PRINT_CHAR(res, fn, arg, '{');
+            WSTACK_PUSH(s,PRT_CLOSE_TUPLE);
+            ++nobj;
+            if (i > 0) {
+                WSTACK_PUSH2(s, (UWord) nobj, PRT_LAST_ARRAY_ELEMENT+i-1);
+            }
+            break;
 	case FLOAT_DEF: {
 	    FloatDef ff;
 	    GET_DOUBLE(wobj, ff);
 	    PRINT_DOUBLE(res, fn, arg, 'e', 6, 0, ff.fd);
 	}
 	    break;
-	case BINARY_DEF:
+	case BITSTRING_DEF:
 	    {
-		byte* bytep;
-		Uint bytesize = binary_size(obj);
-		Uint bitoffs;
-		Uint bitsize;
-		byte octet;
-		ERTS_GET_BINARY_BYTES(obj, bytep, bitoffs, bitsize);
+                Uint bitoffs, bitsize, bytesize;
+                Uint size, offset;
+                byte* bytep;
+                byte octet;
+
+                ERTS_GET_BITSTRING(obj, bytep, offset, size);
+                bytep += BYTE_OFFSET(offset);
+                bitoffs = BIT_OFFSET(offset);
+                bytesize = BYTE_SIZE(size);
+                bitsize = TAIL_BITS(size);
 
 		if (bitsize || !bytesize
 		    || !is_printable_ascii(bytep, bytesize, bitoffs)) {
@@ -569,58 +671,59 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
 		}
 	    }
 	    break;
-	case EXPORT_DEF:
-	    {
-		Export* ep = *((Export **) (export_val(wobj) + 1));
-		long tdcount;
-		int tres;
+        case FUN_DEF:
+            {
+                ErlFunThing *funp = (ErlFunThing *) fun_val(wobj);
 
-		PRINT_STRING(res, fn, arg, "fun ");
+                if (is_local_fun(funp)) {
+                    const ErlFunEntry *fe = funp->entry.fun;
+                    Atom *ap = atom_tab(atom_val(fe->module));
 
-		/* We pass a temporary 'dcount' and adjust the real one later to ensure
-		 * that the fun doesn't get split up between the module and function
-		 * name. */
-		tdcount = MAX_ATOM_SZ_LIMIT;
-		tres = print_atom_name(fn, arg, ep->info.mfa.module, &tdcount);
-		if (tres < 0) {
-		    res = tres;
-		    goto L_done;
-		}
-		*dcount -= (MAX_ATOM_SZ_LIMIT - tdcount);
-		res += tres;
+                    PRINT_STRING(res, fn, arg, "#Fun<");
+                    PRINT_BUF(res, fn, arg, erts_atom_get_name(ap), ap->len);
+                    PRINT_CHAR(res, fn, arg, '.');
+                    PRINT_SWORD(res, fn, arg, 'd', 0, 1,
+                            (ErlPfSWord) fe->old_index);
+                    PRINT_CHAR(res, fn, arg, '.');
+                    PRINT_SWORD(res, fn, arg, 'd', 0, 1,
+                            (ErlPfSWord) fe->old_uniq);
+                    PRINT_CHAR(res, fn, arg, '>');
+                } else {
+                    const Export *ep = funp->entry.exp;
+                    long tdcount;
+                    int tres;
 
-		PRINT_CHAR(res, fn, arg, ':');
+                    PRINT_STRING(res, fn, arg, "fun ");
 
-		tdcount = MAX_ATOM_SZ_LIMIT;
-		tres = print_atom_name(fn, arg, ep->info.mfa.function, &tdcount);
-		if (tres < 0) {
-		    res = tres;
-		    goto L_done;
-		}
-		*dcount -= (MAX_ATOM_SZ_LIMIT - tdcount);
-		res += tres;
+                    /* We pass a temporary 'dcount' and adjust the real one
+                     * later to ensure that the fun doesn't get split up
+                     * between the module and function name. */
+                    tdcount = MAX_ATOM_SZ_LIMIT;
+                    tres = print_atom_name(fn, arg, ep->info.mfa.module, &tdcount);
+                    if (tres < 0) {
+                        res = tres;
+                        goto L_done;
+                    }
+                    *dcount -= (MAX_ATOM_SZ_LIMIT - tdcount);
+                    res += tres;
 
-		PRINT_CHAR(res, fn, arg, '/');
-		PRINT_SWORD(res, fn, arg, 'd', 0, 1,
-			    (ErlPfSWord) ep->info.mfa.arity);
-	    }
-	    break;
-	case FUN_DEF:
-	    {
-		ErlFunThing *funp = (ErlFunThing *) fun_val(wobj);
-		Atom *ap = atom_tab(atom_val(funp->fe->module));
+                    PRINT_CHAR(res, fn, arg, ':');
 
-		PRINT_STRING(res, fn, arg, "#Fun<");
-		PRINT_BUF(res, fn, arg, ap->name, ap->len);
-		PRINT_CHAR(res, fn, arg, '.');
-		PRINT_SWORD(res, fn, arg, 'd', 0, 1,
-			    (ErlPfSWord) funp->fe->old_index);
-		PRINT_CHAR(res, fn, arg, '.');
-		PRINT_SWORD(res, fn, arg, 'd', 0, 1,
-			    (ErlPfSWord) funp->fe->old_uniq);
-		PRINT_CHAR(res, fn, arg, '>');
-	    }
-	    break;
+                    tdcount = MAX_ATOM_SZ_LIMIT;
+                    tres = print_atom_name(fn, arg, ep->info.mfa.function, &tdcount);
+                    if (tres < 0) {
+                        res = tres;
+                        goto L_done;
+                    }
+                    *dcount -= (MAX_ATOM_SZ_LIMIT - tdcount);
+                    res += tres;
+
+                    PRINT_CHAR(res, fn, arg, '/');
+                    PRINT_SWORD(res, fn, arg, 'd', 0, 1,
+                            (ErlPfSWord) ep->info.mfa.arity);
+                }
+            }
+            break;
 	case MAP_DEF: {
             Eterm *head = boxed_val(wobj);
 
@@ -644,54 +747,55 @@ print_term(fmtfn_t fn, void* arg, Eterm obj, long *dcount) {
                 }
             } else {
                 Uint n, mapval;
+                Eterm* assoc;
+                Eterm key, val;
+
                 mapval = MAP_HEADER_VAL(*head);
                 switch (MAP_HEADER_TYPE(*head)) {
                 case MAP_HEADER_TAG_HAMT_HEAD_ARRAY:
                 case MAP_HEADER_TAG_HAMT_HEAD_BITMAP:
-                    PRINT_STRING(res, fn, arg, "#<");
-                    PRINT_UWORD(res, fn, arg, 'x', 0, 1, mapval);
-                    PRINT_STRING(res, fn, arg, ">{");
-                    WSTACK_PUSH(s,PRT_CLOSE_TUPLE);
-                    n = hashmap_bitcount(mapval);
-                    ASSERT(n < 17);
-                    head += 2;
-                    if (n > 0) {
-                        n--;
-                        WSTACK_PUSH(s, head[n]);
-                        WSTACK_PUSH(s, PRT_TERM);
-                        while (n--) {
-                            WSTACK_PUSH(s, PRT_COMMA);
-                            WSTACK_PUSH(s, head[n]);
-                            WSTACK_PUSH(s, PRT_TERM);
-                        }
-                    }
-                    break;
+                    PRINT_STRING(res, fn, arg, "#{");
+                    WSTACK_PUSH(s, PRT_CLOSE_TUPLE);
+                    head++;
+                    ERTS_FALLTHROUGH();
                 case MAP_HEADER_TAG_HAMT_NODE_BITMAP:
                     n = hashmap_bitcount(mapval);
-                    head++;
-                    PRINT_CHAR(res, fn, arg, '<');
-                    PRINT_UWORD(res, fn, arg, 'x', 0, 1, mapval);
-                    PRINT_STRING(res, fn, arg, ">{");
-                    WSTACK_PUSH(s,PRT_CLOSE_TUPLE);
-                    ASSERT(n < 17);
-                    if (n > 0) {
-                        n--;
-                        WSTACK_PUSH(s, head[n]);
-                        WSTACK_PUSH(s, PRT_TERM);
-                        while (n--) {
-                            WSTACK_PUSH(s, PRT_COMMA);
-                            WSTACK_PUSH(s, head[n]);
-                            WSTACK_PUSH(s, PRT_TERM);
+                    ASSERT(0 < n && n < 17);
+                    while (1) {
+                        if (is_list(head[n])) {
+                            assoc = list_val(head[n]);
+                            key = CAR(assoc);
+                            val = CDR(assoc);
+                            WSTACK_PUSH5(s, val, PRT_TERM, PRT_ASSOC, key, PRT_TERM);
                         }
+                        else if (is_tuple(head[n])) { /* collision node */
+                            Eterm *tpl = tuple_val(head[n]);
+                            Uint arity = arityval(tpl[0]);
+                            ASSERT(arity >= 2);
+                            while (1) {
+                                assoc = list_val(tpl[arity]);
+                                key = CAR(assoc);
+                                val = CDR(assoc);
+                                WSTACK_PUSH5(s, val, PRT_TERM, PRT_ASSOC, key, PRT_TERM);
+                                if (--arity == 0)
+                                    break;
+                                WSTACK_PUSH(s, PRT_COMMA);
+                            }
+                        } else {
+                            WSTACK_PUSH2(s, head[n], PRT_TERM);
+                        }
+                        if (--n == 0)
+                            break;
+                        WSTACK_PUSH(s, PRT_COMMA);
                     }
                     break;
                 }
             }
             break;
         }
-	case MATCHSTATE_DEF:
-	    PRINT_STRING(res, fn, arg, "#MatchState");
-	    break;
+        case BIN_REF_DEF:
+            PRINT_STRING(res, fn, arg, "#BinRef");
+            break;
         default:
 	    PRINT_STRING(res, fn, arg, "<unknown:");
 	    PRINT_POINTER(res, fn, arg, wobj);

@@ -1,8 +1,10 @@
 %%
 %% %CopyrightBegin%
-%% 
-%% Copyright Ericsson AB 2003-2018. All Rights Reserved.
-%% 
+%%
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2003-2025. All Rights Reserved.
+%%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
 %% You may obtain a copy of the License at
@@ -14,10 +16,11 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
-%% 
+%%
 %% %CopyrightEnd%
 %%
 -module(observer_html_lib).
+-moduledoc false.
 
 %% 
 %% This module implements the HTML generation for the crashdump
@@ -138,8 +141,17 @@ msgq_table(Tab,Msg0, Id, Even, Colors) ->
     tr(color(Even, Colors),[td(integer_to_list(Id)), td(pre(Msg))]).
 
 stackdump_table(Tab,{Label0,Term0},Even, Colors) ->
-    Label = io_lib:format("~w",[Label0]),
-    Term = all_or_expand(Tab,Term0),
+    Label = io_lib:format("~ts",[Label0]),
+    Term = case string:split(Label, ":") of
+               [_Addr, "S" ++ _] ->
+                   %% Return address or catch tag. It is known to be a
+                   %% flat list, shortish, possibly containing characters
+                   %% greater than 255.
+                   href_proc_port(Term0);
+               _ ->
+                   %% Any term is possible, including huge ones.
+                   all_or_expand(Tab,Term0)
+           end,
     tr(color(Even, Colors), [td("VALIGN=center",pre(Label)), td(pre(Term))]).
 
 dict_table(Tab,{Key0,Value0}, Even, Colors) ->

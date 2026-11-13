@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2007-2018. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2007-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -19,13 +21,16 @@
 %%
 
 -module(crashdump_helper).
+
+-compile(r27).
+
 -export([n1_proc/2,remote_proc/2,
          dump_maps/0,create_maps/0,
          create_binaries/0,create_sub_binaries/1,
          dump_persistent_terms/0,
          create_persistent_terms/0,
          dump_global_literals/0]).
--compile(r20).
+
 -include_lib("common_test/include/ct.hrl").
 
 n1_proc(N2,Creator) ->
@@ -37,7 +42,7 @@ n1_proc(Creator,N2,Pid2,Port2,L) when Pid2==x;length(L)<2->
 	P ->
 	    n1_proc(Creator,N2,Pid2,Port2,[P|L])
     end;
-n1_proc(Creator,_N2,Pid2,Port2,_L) ->
+n1_proc(Creator,N2,Pid2,Port2,_L) ->
     register(aaaaaaaa,self()),
     process_flag(save_calls,3),
     ets:new(cdv_test_ordset_table,[ordered_set]),
@@ -89,6 +94,7 @@ n1_proc(Creator,_N2,Pid2,Port2,_L) ->
     erlang:monitor(process,OtherPid),
     erlang:monitor(process,init), % named process
     erlang:monitor(process,Pid2),
+    monitor_node(N2, true),
 
     code:load_file(?MODULE),
 

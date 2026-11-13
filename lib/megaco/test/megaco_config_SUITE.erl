@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 2000-2021. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 2000-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -39,14 +41,18 @@
          otp_8183/1
         ]).
 
+-include_lib("common_test/include/ct.hrl").
 -include_lib("megaco/include/megaco.hrl").
 -include_lib("megaco/src/app/megaco_internal.hrl").
 -include("megaco_test_lib.hrl").
 
 -record(command, {id, desc, cmd, verify}).
 
--define(TEST_VERBOSITY, debug).
--define(NUM_CNT_PROCS,  100).
+-define(TEST_VERBOSITY,     debug).
+-define(CNT_PROCS_NUM,      100).
+-define(CNT_PROCS_CHUNK,    10).
+-define(MAX_TRANS_ID,       1000).
+-define(MAX_TRANS_ID_CHUNK, 100).
 
 
 %%======================================================================
@@ -143,13 +149,11 @@ end_per_group(_GroupName, Config) ->
 %%
 
 %% Test server callbacks
-init_per_testcase(Case, Config) when (Case =:= otp_7216) orelse
-                                     (Case =:= otp_8167) orelse
-                                     (Case =:= otp_8183) ->
+init_per_testcase(Case, Config) when (Case =/= config) ->
     i("init_per_testcase -> entry with"
       "~n   Config: ~p"
       "~n   Nodes:  ~p", [Config, erlang:nodes()]),
-    
+
     megaco_test_global_sys_monitor:reset_events(),
 
     i("try starting megaco_config"),
@@ -163,6 +167,12 @@ init_per_testcase(Case, Config) when (Case =:= otp_7216) orelse
             {skip, ?F("Failed starting config: ~p", [Reason])}
     end;
 init_per_testcase(Case, Config) ->
+    i("init_per_testcase -> entry with"
+      "~n   Config: ~p"
+      "~n   Nodes:  ~p", [Config, erlang:nodes()]),
+
+    megaco_test_global_sys_monitor:reset_events(),
+
     C = lists:keydelete(tc_timeout, 1, Config),
     do_init_per_testcase(Case, [{tc_timeout, min(3)}|C]).
 
@@ -173,9 +183,7 @@ do_init_per_testcase(Case, Config) ->
 min(M) -> timer:minutes(M).
 
 
-end_per_testcase(Case, Config) when (Case =:= otp_7216) orelse
-                                    (Case =:= otp_8167) orelse
-                                    (Case =:= otp_8183) ->
+end_per_testcase(Case, Config) when (Case =/= config) ->
     p("end_per_testcase -> entry with"
       "~n   Config: ~p"
       "~n   Nodes:  ~p", [Config, erlang:nodes()]),
@@ -187,6 +195,13 @@ end_per_testcase(Case, Config) when (Case =:= otp_7216) orelse
     process_flag(trap_exit, false),
     megaco_test_lib:end_per_testcase(Case, Config);
 end_per_testcase(Case, Config) ->
+    p("end_per_testcase -> entry with"
+      "~n   Config: ~p"
+      "~n   Nodes:  ~p", [Config, erlang:nodes()]),
+
+    p("system events during test: "
+      "~n   ~p", [megaco_test_global_sys_monitor:events()]),
+
     process_flag(trap_exit, false),
     megaco_test_lib:end_per_testcase(Case, Config).
 
@@ -544,6 +559,27 @@ command(No, Desc, Cmd, VerifyVal)
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+calc_max_trans_id(Config) ->
+    calc_number(Config, ?MAX_TRANS_ID_CHUNK, ?MAX_TRANS_ID).
+
+calc_num_cnt_procs(Config) ->
+    calc_number(Config, ?CNT_PROCS_CHUNK, ?CNT_PROCS_NUM).
+
+calc_number(Config, Chunk, Max) ->
+    Factor = ?config(megaco_factor, Config),
+    if
+        (Factor =:= 1) ->
+            Max;
+        (Factor < 10) ->
+            calc_number2(Factor, Chunk, Max);
+        true ->
+            calc_number2(10, Chunk, Max)
+    end.
+
+calc_number2(Factor, Chunk, Max) ->
+    Max - ((Factor-1) * Chunk).
+
+
 transaction_id_counter_mg(suite) ->
     [];
 transaction_id_counter_mg(doc) ->
@@ -553,13 +589,16 @@ transaction_id_counter_mg(doc) ->
 transaction_id_counter_mg(Config) when is_list(Config) ->
     put(verbosity, ?TEST_VERBOSITY),
     put(sname,     "TEST"),
-    put(tc,        transaction_id_counter_mg),
+    put(tc,        ?FUNCTION_NAME),
     
     process_flag(trap_exit, true),
 
-    i("starting"),
+    MaxTransID  = calc_max_trans_id(Config),
+    NumCntProcs = calc_num_cnt_procs(Config),
 
-    {ok, _ConfigPid} = megaco_config:start_link(),
+    i("starting with"
+      "~n      Max Transaction ID:      ~w"
+      "~n      Number Of Counter Procs: ~w", [MaxTransID, NumCntProcs]),
 
     %% Basic user data
     UserMid = {deviceName, "mg"},
@@ -588,11 +627,11 @@ transaction_id_counter_mg(Config) when is_list(Config) ->
     %% Set counter limits
     i("set counter max limit"),
     CH = CD#conn_data.conn_handle, 
-    megaco_config:update_conn_info(CH, max_trans_id, 1000),
+    megaco_config:update_conn_info(CH, max_trans_id, MaxTransID),
 
     %% Create the counter worker procs
-    i("create counter working procs"),
-    Pids = create_counter_working_procs(CH, ?NUM_CNT_PROCS, []),
+    i("create ~w counter working procs", [NumCntProcs]),
+    Pids = create_counter_working_procs(CH, NumCntProcs, []),
 
     %% Start the counter worker procs
     i("release the counter working procs"),
@@ -612,8 +651,6 @@ transaction_id_counter_mg(Config) when is_list(Config) ->
     {ok, _, _} = megaco_config:disconnect(CH),
     i("stop user"),
     ok = megaco_config:stop_user(UserMid),
-    i("stop megaco_config"),
-    ok = megaco_config:stop(),
 
     i("done"),
     ok.
@@ -657,13 +694,15 @@ start_counter_working_procs([Pid | Pids]) ->
     start_counter_working_procs(Pids).
 
 await_completion_counter_working_procs(Pids) ->
-    await_completion_counter_working_procs(ts(), Pids, [], []).
+    await_completion_counter_working_procs(0, ts(), Pids, [], []).
 
-await_completion_counter_working_procs(_TS, [], _OKs, [] = _ERRs) ->
+await_completion_counter_working_procs(MaxTSD, _TS, [], _OKs, [] = _ERRs) ->
+    i("done when ok with max TS-diff: ~p", [MaxTSD]),
     ok;
-await_completion_counter_working_procs(_TS, [], _OKs, ERRs) ->
+await_completion_counter_working_procs(MaxTSD, _TS, [], _OKs, ERRs) ->
+    i("done when error (~w) with max TS-diff: ~p", [length(ERRs), MaxTSD]),
     {error, ERRs};
-await_completion_counter_working_procs(TS, Pids, OKs, ERRs) ->
+await_completion_counter_working_procs(MaxTSD, TS, Pids, OKs, ERRs) ->
     receive
 	{'EXIT', Pid, normal} ->
             %% i("counter working process completion[~w, ~w, ~w] -> "
@@ -671,22 +710,53 @@ await_completion_counter_working_procs(TS, Pids, OKs, ERRs) ->
             %%   "~n      Time since last event: ~s"
             %%   "~n      Pid: ~p",
             %%   [length(Pids), length(OKs), length(ERRs), tsd(TS), Pid]),
+            TSD = ts() - TS,
+            MaxTSD2 =
+                if (TSD > MaxTSD) ->
+                        i("counter working process completion[~w, ~w, ~w] -> "
+                          "Expected exit from counter process: "
+                          "~n      New max time since last event: ~s"
+                          "~n      Pid: ~p",
+                          [length(Pids),
+                           length(OKs),
+                           length(ERRs),
+                           tsd(TSD),
+                           Pid]),
+                        TSD;
+                   true ->
+                        MaxTSD
+                end,
 	    Pids2 = lists:delete(Pid, Pids),
-	    await_completion_counter_working_procs(ts(),
+	    await_completion_counter_working_procs(MaxTSD2, ts(),
                                                    Pids2, [Pid | OKs], ERRs);
 
 	{'EXIT', Pid, {timetrap_timeout, _Timeout, Stack} = _Reason} ->
+            TSD = ts() - TS,
+            MaxTSD2 =
+                if (TSD > MaxTSD) ->
+                        TSD;
+                   true ->
+                        MaxTSD
+                end,
             e("counter working process completion[~w, ~w, ~w] -> "
-              "Unexpected exit from counter process: test case timeout"
-              "~n      Time since last event: ~s"
-              "~n      Pid:                   ~p"
+              "Test case timeout timetrap"
+              "~n      Time since last event: ~s (max ~s)"
+              "~n      Pid:                   ~p (~p)"
               "~n      Stack:                 ~p",
-              [length(Pids), length(OKs), length(ERRs), tsd(TS), Pid, Stack]),
+              [length(Pids), length(OKs), length(ERRs),
+               tsd(TSD), tsd(MaxTSD2),
+               Pid, lists:member(Pid, Pids),
+               Stack]),
             %% The test case (timetrap) has timed out, which either means
             %% we are running on very slow hw or some system functions
             %% are slowing us down (this test case should never normally
             %% time out).
-            case megaco_test_global_sys_monitor:events() of
+            case megaco_test_global_sys_monitor:events(?SECS(5)) of
+                {error, timeout} ->
+                    i("counter working process completion[~w, ~w, ~w] -> "
+                      "idle:sys-mon timeout",
+                      [length(Pids), length(OKs), length(ERRs)]),
+                    ?SKIP("TC idle; sys-monitor evs timeout");
                 [] ->
                     i("counter working process completion[~w, ~w, ~w] -> idle",
                       [length(Pids), length(OKs), length(ERRs)]),
@@ -700,43 +770,68 @@ await_completion_counter_working_procs(TS, Pids, OKs, ERRs) ->
             end;
 
 	{'EXIT', Pid, Reason} ->
-            TSD = tsd(TS),
+            TSD = ts() - TS,
+            MaxTSD2 =
+                if (TSD > MaxTSD) ->
+                        TSD;
+                   true ->
+                        MaxTSD
+                end,
             e("counter working process completion[~w, ~w, ~w] -> "
               "Unexpected exit from counter process: "
-              "~n      Time since last event: ~s"
+              "~n      Time since last event: ~s (max ~s)"
               "~n      Pid:                   ~p"
               "~n      Reason:                ~p",
-              [length(Pids), length(OKs), length(ERRs), TSD, Pid, Reason]),
+              [length(Pids), length(OKs), length(ERRs),
+               tsd(TSD), tsd(MaxTSD2),
+               Pid, Reason]),
 	    Pids2 = lists:delete(Pid, Pids),
-	    await_completion_counter_working_procs(ts(),
+	    await_completion_counter_working_procs(MaxTSD2, ts(),
                                                    Pids2, OKs, [Pid | ERRs]);
 
 	Any ->
-            TSD = tsd(TS),
+            TSD = ts() - TS,
+            MaxTSD2 =
+                if (TSD > MaxTSD) ->
+                        TSD;
+                   true ->
+                        MaxTSD
+                end,
             e("counter working process completion[~w, ~w, ~w] -> "
               "Unexpected message: "
-              "~n      Time since last event: ~s"
+              "~n      Time since last event: ~s (max ~s)"
               "~n      ~p",
-              [length(Pids), length(OKs), length(ERRs), TSD, Any]),
-	    await_completion_counter_working_procs(TS, Pids, OKs, ERRs)
+              [length(Pids), length(OKs), length(ERRs),
+               tsd(TSD), tsd(MaxTSD2),
+               Any]),
+	    await_completion_counter_working_procs(MaxTSD2, TS,
+                                                   Pids, OKs, ERRs)
 
-    after 10000 ->
+    after 1000 ->
             %% If nothing has happened for this long, something is wrong:
             %% Check system events
-            TSD = tsd(TS),
+            TS2 = ts(),
+            TSD = TS2 - TS,
             case megaco_test_global_sys_monitor:events() of
                 [] ->
+                    TS3 = ts(),
                     i("counter working process completion[~w, ~w, ~w] -> idle"
-                      "~n      Time since last event: ~s",
-                      [length(Pids), length(OKs), length(ERRs), TSD]),
-                    await_completion_counter_working_procs(TS,
+                      "~n      Time since last event:       ~s"
+                      "~n      (global) sys monitor events: ~s",
+                      [length(Pids), length(OKs), length(ERRs),
+                       tsd(TSD), tsd(TS3 - TS2)]),
+                    await_completion_counter_working_procs(MaxTSD, TS,
                                                            Pids, OKs, ERRs);
                 SysEvs ->
+                    TS3 = ts(),
                     e("counter working process completion[~w, ~w, ~w] -> "
                       "system event(s): "
-                      "~n      Time since last event: ~s"
+                      "~n      Time since last event:       ~s"
+                      "~n      (global) sys monitor events: ~s"
                       "~n      ~p",
-                      [length(Pids), length(OKs), length(ERRs), TSD, SysEvs]),
+                      [length(Pids), length(OKs), length(ERRs),
+                       tsd(TSD), tsd(TS3 - TS2),
+                       SysEvs]),
                     ?SKIP("TC idle with system events")
             end
     end.
@@ -751,11 +846,19 @@ transaction_id_counter_mgc(doc) ->
      "transaction counter handling of the application "
      "in with several connections (MGC). "];
 transaction_id_counter_mgc(Config) when is_list(Config) ->
-    Name = transaction_id_counter_mgc,
-    Pre = fun() ->
-                  i("starting config server"),
-                  {ok, _ConfigPid} = megaco_config:start_link(),
+    put(verbosity, ?TEST_VERBOSITY),
+    put(sname,     "TEST"),
+    put(tc,        ?FUNCTION_NAME),
+    
+    Name        = ?FUNCTION_NAME,
+    MaxTransID  = calc_max_trans_id(Config),
+    NumCntProcs = calc_num_cnt_procs(Config),                   
 
+    i("starting with"
+      "~n      Max Transaction ID:      ~w"
+      "~n      Number Of Counter Procs: ~w", [MaxTransID, NumCntProcs]),
+
+    Pre = fun() ->
                   %% Basic user data
                   UserMid = {deviceName, "mgc"},
                   UserConfig = [
@@ -835,14 +938,15 @@ transaction_id_counter_mgc(Config) when is_list(Config) ->
 
                   %% Set counter limits
                   i("set counter max limit(s)"),
-                  set_counter_max_limits(CDs, 1000),
+                  set_counter_max_limits(CDs, MaxTransID),
 
                   {UserMid, CDs}
           end,
+
     Case = fun({_, CDs}) ->
                    %% Create the counter worker procs
-                   i("create counter working procs"),
-                   Pids = create_counter_working_procs(CDs, ?NUM_CNT_PROCS),
+                   i("create ~w counter working procs", [NumCntProcs]),
+                   Pids = create_counter_working_procs(CDs, NumCntProcs),
 
                    %% Start the counter worker procs
                    i("release the counter working procs"),
@@ -863,8 +967,8 @@ transaction_id_counter_mgc(Config) when is_list(Config) ->
                    delete_connections(CDs), 
                    i("stop user"),
                    ok = megaco_config:stop_user(UserMid),
-                   i("stop megaco_config"),
-                   ok = megaco_config:stop()
+                   i("done"),
+                   ok
            end,
     try_tc(Name, Pre, Case, Post).
 
@@ -1319,8 +1423,7 @@ try_tc(TCName, Name, Verbosity, Pre, Case, Post) ->
 ts() ->
     erlang:monotonic_time(milli_seconds).
 
-tsd(TS) ->
-    TSD = ts() - TS,
+tsd(TSD) ->
     if (TSD < 1000) ->
             ?F("~w ms", [TSD]);
        (TSD < 60000) ->
@@ -1328,6 +1431,8 @@ tsd(TS) ->
        true ->
             ?F("~w mins", [TSD div 60000])
     end.
+
+
 
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%

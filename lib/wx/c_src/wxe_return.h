@@ -1,8 +1,10 @@
 /*
  * %CopyrightBegin%
- * 
- * Copyright Ericsson AB 2008-2016. All Rights Reserved.
- * 
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Copyright Ericsson AB 2008-2026. All Rights Reserved.
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -14,8 +16,8 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- * 
- * %CopyrightEnd% 
+ *
+ * %CopyrightEnd%
  */
 
 /* 
@@ -39,9 +41,6 @@
 #include <wx/html/htmlcell.h>
 #include <wx/graphics.h>
 
-#define RT_BUFF_SZ 64
-
-
 
 class wxeReturn {
 
@@ -62,7 +61,11 @@ public:
     ERL_NIF_TERM make_ext2term(wxETreeItemData * term);
 
     ERL_NIF_TERM make_list_strings(size_t size, wxString* atomName);
-    ERL_NIF_TERM make_list_objs(const wxObjectList& wx_list, WxeApp *app, const char *cname);
+
+    ERL_NIF_TERM make_list_objs(const wxWindowList& wx_list, WxeApp *app, const char *cname);
+    ERL_NIF_TERM make_list_objs(const wxSizerItemList& wx_list, WxeApp *app, const char *cname);
+    ERL_NIF_TERM make_list_objs(const wxMenuItemList& wx_list, WxeApp *app, const char *cname);
+
     ERL_NIF_TERM make_array_objs(wxGridCellCoordsArray& arr);
     // ERL_NIF_TERM make_array_objs(const wxList& wx_list, WxeApp *app, const char *cname);
     ERL_NIF_TERM make_array_objs(wxArrayTreeItemIds& arr);

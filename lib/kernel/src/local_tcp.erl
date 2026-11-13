@@ -1,7 +1,9 @@
 %%
 %% %CopyrightBegin%
 %%
-%% Copyright Ericsson AB 1997-2016. All Rights Reserved.
+%% SPDX-License-Identifier: Apache-2.0
+%%
+%% Copyright Ericsson AB 1997-2025. All Rights Reserved.
 %%
 %% Licensed under the Apache License, Version 2.0 (the "License");
 %% you may not use this file except in compliance with the License.
@@ -18,6 +20,7 @@
 %% %CopyrightEnd%
 %%
 -module(local_tcp).
+-moduledoc false.
 
 %% Socket server for TCP/IP
 
@@ -36,6 +39,7 @@
 -define(PROTO, tcp).
 -define(TYPE, stream).
 
+
 %% port lookup
 getserv(0) -> {ok, 0}.
 
@@ -48,7 +52,7 @@ getaddrs({?FAMILY, _} = Address) -> {ok, [Address]}.
 getaddrs({?FAMILY, _} = Address, _Timer) -> {ok, [Address]}.
 
 %% special this side addresses
-translate_ip(IP) -> IP.
+translate_ip(IP) -> local_udp:translate_ip(IP).
 
 %%
 %% Send data on a socket
@@ -131,8 +135,8 @@ listen(0, Opts) ->
 	    ifaddr = BAddr,
 	    port = 0,
 	    opts = SockOpts} = R}
-	when tuple_size(BAddr) =:= 2, element(1, BAddr) =:= ?FAMILY;
-	     BAddr =:= any ->
+          when tuple_size(BAddr) =:= 2, element(1, BAddr) =:= ?FAMILY;
+               BAddr =:= undefined ->
 	    case inet:open(
 		   Fd, BAddr, 0, SockOpts,
 		   ?PROTO, ?FAMILY, ?TYPE, ?MODULE) of
@@ -169,4 +173,4 @@ accept(L, Timeout) ->
 %% Create a port/socket from a file descriptor
 %%
 fdopen(Fd, Opts) ->
-    inet:open(Fd, undefined, 0, Opts, ?PROTO, ?FAMILY, ?TYPE, ?MODULE).
+    inet:fdopen(Fd, Opts, ?PROTO, ?FAMILY, ?TYPE, ?MODULE).
